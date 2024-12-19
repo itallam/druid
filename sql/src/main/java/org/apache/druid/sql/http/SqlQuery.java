@@ -20,46 +20,86 @@
 package org.apache.druid.sql.http;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.apache.calcite.avatica.remote.TypedValue;
+import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.query.QueryContext;
+import org.apache.druid.query.http.ClientSqlQuery;
 
+import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
+/**
+ * See {@link ClientSqlQuery} for the equivalent POJO class used on the client side to interact with the Broker.
+ * Note: The fields {@link #resultFormat} and {@link #parameters} rely on Calcite data types,
+ * preventing this class from being moved to the processing module for reuse.
+ */
 public class SqlQuery
 {
   public static List<TypedValue> getParameterList(List<SqlParameter> parameters)
   {
     return parameters.stream()
-                     .map(SqlParameter::getTypedValue)
+                     // null params are not good!
+                     // we pass them to the planner, so that it can generate a proper error message.
+                     // see SqlParameterizerShuttle and RelParameterizerShuttle.
+                     .map(p -> p == null ? null : p.getTypedValue())
                      .collect(Collectors.toList());
   }
 
   private final String query;
   private final ResultFormat resultFormat;
   private final boolean header;
+  private final boolean typesHeader;
+  private final boolean sqlTypesHeader;
   private final Map<String, Object> context;
   private final List<SqlParameter> parameters;
 
   @JsonCreator
   public SqlQuery(
       @JsonProperty("query") final String query,
-      @JsonProperty("resultFormat") final ResultFormat resultFormat,
+      @JsonProperty("resultFormat") @Nullable final ResultFormat resultFormat,
       @JsonProperty("header") final boolean header,
-      @JsonProperty("context") final Map<String, Object> context,
-      @JsonProperty("parameters") final List<SqlParameter> parameters
+      @JsonProperty("typesHeader") final boolean typesHeader,
+      @JsonProperty("sqlTypesHeader") final boolean sqlTypesHeader,
+      @JsonProperty("context") @Nullable final Map<String, Object> context,
+      @JsonProperty("parameters") @Nullable final List<SqlParameter> parameters
   )
   {
     this.query = Preconditions.checkNotNull(query, "query");
-    this.resultFormat = resultFormat == null ? ResultFormat.OBJECT : resultFormat;
+    this.resultFormat = resultFormat == null ? ResultFormat.DEFAULT_RESULT_FORMAT : resultFormat;
     this.header = header;
+    this.typesHeader = typesHeader;
+    this.sqlTypesHeader = sqlTypesHeader;
     this.context = context == null ? ImmutableMap.of() : context;
     this.parameters = parameters == null ? ImmutableList.of() : parameters;
+
+    if (typesHeader && !header) {
+      throw new ISE("Cannot include 'typesHeader' without 'header'");
+    }
+
+    if (sqlTypesHeader && !header) {
+      throw new ISE("Cannot include 'sqlTypesHeader' without 'header'");
+    }
+  }
+
+  public SqlQuery withOverridenContext(Map<String, Object> overridenContext)
+  {
+    return new SqlQuery(
+        getQuery(),
+        getResultFormat(),
+        includeHeader(),
+        includeTypesHeader(),
+        includeSqlTypesHeader(),
+        overridenContext,
+        getParameters()
+    );
   }
 
   @JsonProperty
@@ -75,15 +115,35 @@ public class SqlQuery
   }
 
   @JsonProperty("header")
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
   public boolean includeHeader()
   {
     return header;
+  }
+
+  @JsonProperty("typesHeader")
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+  public boolean includeTypesHeader()
+  {
+    return typesHeader;
+  }
+
+  @JsonProperty("sqlTypesHeader")
+  @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+  public boolean includeSqlTypesHeader()
+  {
+    return sqlTypesHeader;
   }
 
   @JsonProperty
   public Map<String, Object> getContext()
   {
     return context;
+  }
+
+  public QueryContext queryContext()
+  {
+    return QueryContext.of(context);
   }
 
   @JsonProperty
@@ -108,6 +168,8 @@ public class SqlQuery
     }
     final SqlQuery sqlQuery = (SqlQuery) o;
     return header == sqlQuery.header &&
+           typesHeader == sqlQuery.typesHeader &&
+           sqlTypesHeader == sqlQuery.sqlTypesHeader &&
            Objects.equals(query, sqlQuery.query) &&
            resultFormat == sqlQuery.resultFormat &&
            Objects.equals(context, sqlQuery.context) &&
@@ -117,7 +179,7 @@ public class SqlQuery
   @Override
   public int hashCode()
   {
-    return Objects.hash(query, resultFormat, header, context, parameters);
+    return Objects.hash(query, resultFormat, header, typesHeader, sqlTypesHeader, context, parameters);
   }
 
   @Override
@@ -127,6 +189,8 @@ public class SqlQuery
            "query='" + query + '\'' +
            ", resultFormat=" + resultFormat +
            ", header=" + header +
+           ", typesHeader=" + typesHeader +
+           ", sqlTypesHeader=" + sqlTypesHeader +
            ", context=" + context +
            ", parameters=" + parameters +
            '}';

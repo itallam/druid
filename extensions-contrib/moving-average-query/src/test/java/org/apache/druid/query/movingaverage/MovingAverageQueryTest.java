@@ -28,6 +28,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.inject.Injector;
 import com.google.inject.Module;
+import com.google.inject.multibindings.Multibinder;
 import com.google.inject.name.Names;
 import com.google.inject.util.Providers;
 import org.apache.druid.client.CachingClusteredClient;
@@ -40,23 +41,23 @@ import org.apache.druid.client.cache.ForegroundCachePopulator;
 import org.apache.druid.client.cache.MapCache;
 import org.apache.druid.client.selector.ServerSelector;
 import org.apache.druid.data.input.MapBasedRow;
+import org.apache.druid.discovery.NodeRole;
 import org.apache.druid.guice.DruidProcessingModule;
 import org.apache.druid.guice.GuiceInjectors;
 import org.apache.druid.guice.QueryRunnerFactoryModule;
 import org.apache.druid.guice.QueryableModule;
+import org.apache.druid.guice.annotations.Self;
 import org.apache.druid.guice.http.DruidHttpClientConfig;
 import org.apache.druid.initialization.Initialization;
 import org.apache.druid.java.util.common.guava.Accumulators;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
-import org.apache.druid.java.util.emitter.core.Event;
-import org.apache.druid.java.util.emitter.service.ServiceEmitter;
-import org.apache.druid.query.DruidProcessingConfig;
+import org.apache.druid.query.BrokerParallelMergeConfig;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunner;
+import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.QuerySegmentWalker;
-import org.apache.druid.query.QueryToolChestWarehouse;
 import org.apache.druid.query.Result;
 import org.apache.druid.query.RetryQueryRunnerConfig;
 import org.apache.druid.query.SegmentDescriptor;
@@ -69,10 +70,13 @@ import org.apache.druid.query.timeseries.TimeseriesResultValue;
 import org.apache.druid.segment.join.MapJoinableFactory;
 import org.apache.druid.server.ClientQuerySegmentWalker;
 import org.apache.druid.server.QueryStackTests;
+import org.apache.druid.server.SubqueryGuardrailHelper;
 import org.apache.druid.server.initialization.ServerConfig;
 import org.apache.druid.server.metrics.NoopServiceEmitter;
+import org.apache.druid.server.metrics.SubqueryCountStatsProvider;
 import org.apache.druid.testing.InitializedNullHandlingTest;
 import org.apache.druid.timeline.TimelineLookup;
+import org.apache.druid.utils.JvmUtils;
 import org.hamcrest.core.IsInstanceOf;
 import org.joda.time.Interval;
 import org.junit.Assert;
@@ -100,7 +104,7 @@ import java.util.concurrent.ForkJoinPool;
 public class MovingAverageQueryTest extends InitializedNullHandlingTest
 {
   private final ObjectMapper jsonMapper;
-  private final QueryToolChestWarehouse warehouse;
+  private final QueryRunnerFactoryConglomerate conglomerate;
   private final RetryQueryRunnerConfig retryConfig;
   private final ServerConfig serverConfig;
 
@@ -153,6 +157,7 @@ public class MovingAverageQueryTest extends InitializedNullHandlingTest
               return getQueryRunnerForIntervals(query, null);
             }
           }));
+          Multibinder.newSetBinder(binder, NodeRole.class, Self.class).addBinding().toInstance(NodeRole.BROKER);
         }
     );
 
@@ -162,7 +167,7 @@ public class MovingAverageQueryTest extends InitializedNullHandlingTest
     Injector injector = Initialization.makeInjectorWithModules(baseInjector, modules);
 
     jsonMapper = injector.getInstance(ObjectMapper.class);
-    warehouse = injector.getInstance(QueryToolChestWarehouse.class);
+    conglomerate = injector.getInstance(QueryRunnerFactoryConglomerate.class);
     retryConfig = injector.getInstance(RetryQueryRunnerConfig.class);
     serverConfig = injector.getInstance(ServerConfig.class);
 
@@ -229,9 +234,7 @@ public class MovingAverageQueryTest extends InitializedNullHandlingTest
 
   private TypeReference<List<MapBasedRow>> getExpectedResultType()
   {
-    return new TypeReference<List<MapBasedRow>>()
-    {
-    };
+    return new TypeReference<>() {};
   }
 
   /**
@@ -306,8 +309,17 @@ public class MovingAverageQueryTest extends InitializedNullHandlingTest
     Assert.assertNotNull(expectedResults);
     Assert.assertThat(expectedResults, IsInstanceOf.instanceOf(List.class));
 
+    DruidHttpClientConfig httpClientConfig = new DruidHttpClientConfig()
+    {
+      @Override
+      public long getMaxQueuedBytes()
+      {
+        return 0L;
+      }
+    };
+
     CachingClusteredClient baseClient = new CachingClusteredClient(
-        warehouse,
+        conglomerate,
         new TimelineServerView()
         {
           @Override
@@ -350,45 +362,26 @@ public class MovingAverageQueryTest extends InitializedNullHandlingTest
         jsonMapper,
         new ForegroundCachePopulator(jsonMapper, new CachePopulatorStats(), -1),
         new CacheConfig(),
-        new DruidHttpClientConfig()
-        {
-          @Override
-          public long getMaxQueuedBytes()
-          {
-            return 0L;
-          }
-        },
-        new DruidProcessingConfig()
-        {
-          @Override
-          public String getFormatString()
-          {
-            return null;
-          }
-        },
+        httpClientConfig,
+        new BrokerParallelMergeConfig(),
         ForkJoinPool.commonPool(),
         QueryStackTests.DEFAULT_NOOP_SCHEDULER,
-        new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()),
         new NoopServiceEmitter()
     );
 
     ClientQuerySegmentWalker walker = new ClientQuerySegmentWalker(
-        new ServiceEmitter("", "", null)
-        {
-          @Override
-          public void emit(Event event)
-          {
-          }
-        },
+        new NoopServiceEmitter(),
         baseClient,
         null /* local client; unused in this test, so pass in null */,
-        warehouse,
+        conglomerate,
         new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()),
         retryConfig,
         jsonMapper,
         serverConfig,
         null,
-        new CacheConfig()
+        new CacheConfig(),
+        new SubqueryGuardrailHelper(null, JvmUtils.getRuntimeInfo().getMaxHeapSizeBytes(), 1),
+        new SubqueryCountStatsProvider()
     );
 
     defineMocks();
@@ -397,7 +390,7 @@ public class MovingAverageQueryTest extends InitializedNullHandlingTest
     final Sequence<?> res = query.getRunner(walker).run(queryPlus);
 
     List actualResults = new ArrayList();
-    actualResults = (List<MapBasedRow>) res.accumulate(actualResults, Accumulators.list());
+    actualResults = res.accumulate(actualResults, Accumulators.list());
 
     expectedResults = consistentTypeCasting(expectedResults);
     actualResults = consistentTypeCasting(actualResults);

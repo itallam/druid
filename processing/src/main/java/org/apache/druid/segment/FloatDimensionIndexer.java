@@ -27,47 +27,43 @@ import org.apache.druid.query.dimension.DimensionSpec;
 import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnCapabilitiesImpl;
-import org.apache.druid.segment.column.ValueType;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.data.CloseableIndexed;
 import org.apache.druid.segment.incremental.IncrementalIndex;
 import org.apache.druid.segment.incremental.IncrementalIndexRowHolder;
 
 import javax.annotation.Nullable;
 import java.util.Comparator;
-import java.util.List;
 import java.util.Objects;
 
 public class FloatDimensionIndexer implements DimensionIndexer<Float, Float, Float>
 {
   public static final Comparator<Float> FLOAT_COMPARATOR = Comparators.naturalNullsFirst();
-
+  private final String dimensionName;
   private volatile boolean hasNulls = false;
 
-  @Nullable
-  @Override
-  public Float processRowValsToUnsortedEncodedKeyComponent(@Nullable Object dimValues, boolean reportParseExceptions)
+  public FloatDimensionIndexer(String dimensionName)
   {
-    if (dimValues instanceof List) {
-      throw new UnsupportedOperationException("Numeric columns do not support multivalue rows.");
-    }
+    this.dimensionName = dimensionName;
+  }
 
-    Float f = DimensionHandlerUtils.convertObjectToFloat(dimValues, reportParseExceptions);
+  @Override
+  public EncodedKeyComponent<Float> processRowValsToUnsortedEncodedKeyComponent(
+      @Nullable Object dimValues,
+      boolean reportParseExceptions
+  )
+  {
+    Float f = DimensionHandlerUtils.convertObjectToFloat(dimValues, reportParseExceptions, dimensionName);
     if (f == null) {
       hasNulls = NullHandling.sqlCompatible();
     }
-    return f;
+    return new EncodedKeyComponent<>(f, Float.BYTES);
   }
 
   @Override
   public void setSparseIndexed()
   {
     hasNulls = NullHandling.sqlCompatible();
-  }
-
-  @Override
-  public long estimateEncodedKeyComponentSize(Float key)
-  {
-    return Float.BYTES;
   }
 
   @Override
@@ -103,7 +99,7 @@ public class FloatDimensionIndexer implements DimensionIndexer<Float, Float, Flo
   @Override
   public ColumnCapabilities getColumnCapabilities()
   {
-    ColumnCapabilitiesImpl builder = ColumnCapabilitiesImpl.createSimpleNumericColumnCapabilities(ValueType.FLOAT);
+    ColumnCapabilitiesImpl builder = ColumnCapabilitiesImpl.createSimpleNumericColumnCapabilities(ColumnType.FLOAT);
     if (hasNulls) {
       builder.setHasNulls(hasNulls);
     }

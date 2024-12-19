@@ -23,11 +23,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import org.apache.druid.common.utils.UUIDUtils;
 import org.apache.druid.guice.Hdfs;
 import org.apache.druid.java.util.common.IOE;
+import org.apache.druid.java.util.common.RetryUtils;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.segment.SegmentUtils;
@@ -54,7 +56,6 @@ public class HdfsDataSegmentPusher implements DataSegmentPusher
   private static final Logger log = new Logger(HdfsDataSegmentPusher.class);
 
   private final Configuration hadoopConfig;
-  private final ObjectMapper jsonMapper;
 
   // We lazily initialize fullQualifiedStorageDirectory to avoid potential issues with Hadoop namenode HA.
   // Please see https://github.com/apache/druid/pull/5684
@@ -68,7 +69,6 @@ public class HdfsDataSegmentPusher implements DataSegmentPusher
   )
   {
     this.hadoopConfig = hadoopConfig;
-    this.jsonMapper = jsonMapper;
     Path storageDir = new Path(config.getStorageDirectory());
     this.fullyQualifiedStorageDirectory = Suppliers.memoize(
         () -> {
@@ -105,11 +105,57 @@ public class HdfsDataSegmentPusher implements DataSegmentPusher
     // '{partitionNum}_index.zip' without unique paths and '{partitionNum}_{UUID}_index.zip' with unique paths.
     final String storageDir = this.getStorageDir(segment, false);
 
+
+    final String uniquePrefix = useUniquePath ? DataSegmentPusher.generateUniquePath() + "_" : "";
+    final String outIndexFilePathSuffix = StringUtils.format(
+        "%s/%s/%d_%sindex.zip",
+        fullyQualifiedStorageDirectory.get(),
+        storageDir,
+        segment.getShardSpec().getPartitionNum(),
+        uniquePrefix
+    );
+
+    return pushToFilePathWithRetry(inDir, segment, outIndexFilePathSuffix);
+  }
+
+  @Override
+  public DataSegment pushToPath(File inDir, DataSegment segment, String storageDirSuffix) throws IOException
+  {
+    String outIndexFilePath = StringUtils.format(
+        "%s/%s/%d_index.zip",
+        fullyQualifiedStorageDirectory.get(),
+        storageDirSuffix.replace(':', '_'),
+        segment.getShardSpec().getPartitionNum()
+    );
+
+    return pushToFilePathWithRetry(inDir, segment, outIndexFilePath);
+  }
+
+  private DataSegment pushToFilePathWithRetry(File inDir, DataSegment segment, String outIndexFilePath)
+      throws IOException
+  {
+    // Retry any HDFS errors that occur, up to 5 times.
+    try {
+      return RetryUtils.retry(
+          () -> pushToFilePath(inDir, segment, outIndexFilePath),
+          exception -> exception instanceof Exception,
+          5
+      );
+    }
+    catch (Exception e) {
+      Throwables.throwIfInstanceOf(e, IOException.class);
+      Throwables.throwIfInstanceOf(e, RuntimeException.class);
+      throw new RuntimeException(e);
+    }
+  }
+
+  private DataSegment pushToFilePath(File inDir, DataSegment segment, String outIndexFilePath) throws IOException
+  {
     log.debug(
         "Copying segment[%s] to HDFS at location[%s/%s]",
         segment.getId(),
         fullyQualifiedStorageDirectory.get(),
-        storageDir
+        outIndexFilePath
     );
 
     Path tmpIndexFile = new Path(StringUtils.format(
@@ -130,16 +176,7 @@ public class HdfsDataSegmentPusher implements DataSegmentPusher
       try (FSDataOutputStream out = fs.create(tmpIndexFile)) {
         size = CompressionUtils.zip(inDir, out);
       }
-
-      final String uniquePrefix = useUniquePath ? DataSegmentPusher.generateUniquePath() + "_" : "";
-      final Path outIndexFile = new Path(StringUtils.format(
-          "%s/%s/%d_%sindex.zip",
-          fullyQualifiedStorageDirectory.get(),
-          storageDir,
-          segment.getShardSpec().getPartitionNum(),
-          uniquePrefix
-      ));
-
+      final Path outIndexFile = new Path(outIndexFilePath);
       dataSegment = segment.withLoadSpec(makeLoadSpec(outIndexFile.toUri()))
                            .withSize(size)
                            .withBinaryVersion(SegmentUtils.getVersionFromDir(inDir));

@@ -18,11 +18,10 @@
 
 import { IconNames } from '@blueprintjs/icons';
 import { render } from '@testing-library/react';
-import React from 'react';
 
 import { HomeViewCard } from './home-view-card';
 
-describe('home view card', () => {
+describe('HomeViewCard', () => {
   it('matches snapshot', () => {
     const homeViewCard = (
       <HomeViewCard

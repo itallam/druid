@@ -32,20 +32,21 @@ import org.apache.druid.segment.IndexMerger;
 import org.apache.druid.segment.incremental.ParseExceptionHandler;
 import org.apache.druid.segment.incremental.RowIngestionMeters;
 import org.apache.druid.segment.indexing.DataSchema;
-import org.apache.druid.segment.join.JoinableFactory;
 import org.apache.druid.segment.loading.DataSegmentPusher;
-import org.apache.druid.segment.realtime.FireDepartmentMetrics;
+import org.apache.druid.segment.loading.SegmentLoaderConfig;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
+import org.apache.druid.segment.realtime.SegmentGenerationMetrics;
 import org.apache.druid.server.coordination.DataSegmentAnnouncer;
-import org.apache.druid.server.coordination.NoopDataSegmentAnnouncer;
 import org.apache.druid.timeline.VersionedIntervalTimeline;
 
 public class Appenderators
 {
   public static Appenderator createRealtime(
+      SegmentLoaderConfig segmentLoaderConfig,
       String id,
       DataSchema schema,
       AppenderatorConfig config,
-      FireDepartmentMetrics metrics,
+      SegmentGenerationMetrics metrics,
       DataSegmentPusher dataSegmentPusher,
       ObjectMapper objectMapper,
       IndexIO indexIO,
@@ -54,15 +55,17 @@ public class Appenderators
       DataSegmentAnnouncer segmentAnnouncer,
       ServiceEmitter emitter,
       QueryProcessingPool queryProcessingPool,
-      JoinableFactory joinableFactory,
       Cache cache,
       CacheConfig cacheConfig,
       CachePopulatorStats cachePopulatorStats,
       RowIngestionMeters rowIngestionMeters,
-      ParseExceptionHandler parseExceptionHandler
+      ParseExceptionHandler parseExceptionHandler,
+      boolean useMaxMemoryEstimates,
+      CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig
   )
   {
     return new StreamAppenderator(
+        segmentLoaderConfig,
         id,
         schema,
         config,
@@ -79,7 +82,6 @@ public class Appenderators
             emitter,
             conglomerate,
             queryProcessingPool,
-            joinableFactory,
             Preconditions.checkNotNull(cache, "cache"),
             cacheConfig,
             cachePopulatorStats
@@ -88,44 +90,30 @@ public class Appenderators
         indexMerger,
         cache,
         rowIngestionMeters,
-        parseExceptionHandler
+        parseExceptionHandler,
+        useMaxMemoryEstimates,
+        centralizedDatasourceSchemaConfig
     );
   }
 
-  public static Appenderator createOffline(
+  public static Appenderator createBatch(
       String id,
       DataSchema schema,
       AppenderatorConfig config,
-      FireDepartmentMetrics metrics,
+      SegmentGenerationMetrics metrics,
       DataSegmentPusher dataSegmentPusher,
       ObjectMapper objectMapper,
       IndexIO indexIO,
       IndexMerger indexMerger,
       RowIngestionMeters rowIngestionMeters,
       ParseExceptionHandler parseExceptionHandler,
-      boolean useLegacyBatchProcessing
+      boolean useMaxMemoryEstimates,
+      CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig
   )
   {
-    if (useLegacyBatchProcessing) {
-      // fallback to code known to be working, this is just a fallback option in case new
-      // batch appenderator has some early bugs but we will remove this fallback as soon as
-      // we determine that batch appenderator code is stable
-      return new StreamAppenderator(
-          id,
-          schema,
-          config,
-          metrics,
-          dataSegmentPusher,
-          objectMapper,
-          new NoopDataSegmentAnnouncer(),
-          null,
-          indexIO,
-          indexMerger,
-          null,
-          rowIngestionMeters,
-          parseExceptionHandler
-      );
-    }
+    // Use newest, slated to be the permanent batch appenderator but for now keeping it as a non-default
+    // option due to risk mitigation...will become default and the two other appenderators eliminated when
+    // stability is proven...
     return new BatchAppenderator(
         id,
         schema,
@@ -136,7 +124,9 @@ public class Appenderators
         indexIO,
         indexMerger,
         rowIngestionMeters,
-        parseExceptionHandler
+        parseExceptionHandler,
+        useMaxMemoryEstimates,
+        centralizedDatasourceSchemaConfig
     );
   }
 }

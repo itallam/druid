@@ -19,6 +19,7 @@
 
 package org.apache.druid.server;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
@@ -36,24 +37,35 @@ import org.apache.druid.query.DefaultQueryConfig;
 import org.apache.druid.query.DruidMetrics;
 import org.apache.druid.query.GenericQueryMetricsFactory;
 import org.apache.druid.query.Query;
+import org.apache.druid.query.QueryContext;
+import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.QueryInterruptedException;
 import org.apache.druid.query.QueryMetrics;
 import org.apache.druid.query.QueryPlus;
+import org.apache.druid.query.QueryRunnerFactoryConglomerate;
 import org.apache.druid.query.QuerySegmentWalker;
 import org.apache.druid.query.QueryTimeoutException;
 import org.apache.druid.query.QueryToolChest;
-import org.apache.druid.query.QueryToolChestWarehouse;
 import org.apache.druid.query.context.ResponseContext;
+import org.apache.druid.server.QueryResource.ResourceIOReaderWriter;
 import org.apache.druid.server.log.RequestLogger;
 import org.apache.druid.server.security.Access;
+import org.apache.druid.server.security.Action;
+import org.apache.druid.server.security.AuthConfig;
 import org.apache.druid.server.security.AuthenticationResult;
 import org.apache.druid.server.security.AuthorizationUtils;
 import org.apache.druid.server.security.AuthorizerMapper;
+import org.apache.druid.server.security.Resource;
+import org.apache.druid.server.security.ResourceAction;
+import org.apache.druid.server.security.ResourceType;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
 import javax.annotation.Nullable;
 import javax.servlet.http.HttpServletRequest;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -74,44 +86,50 @@ public class QueryLifecycle
 {
   private static final Logger log = new Logger(QueryLifecycle.class);
 
-  private final QueryToolChestWarehouse warehouse;
+  private final QueryRunnerFactoryConglomerate conglomerate;
   private final QuerySegmentWalker texasRanger;
   private final GenericQueryMetricsFactory queryMetricsFactory;
   private final ServiceEmitter emitter;
   private final RequestLogger requestLogger;
   private final AuthorizerMapper authorizerMapper;
   private final DefaultQueryConfig defaultQueryConfig;
+  private final AuthConfig authConfig;
   private final long startMs;
   private final long startNs;
 
   private State state = State.NEW;
   private AuthenticationResult authenticationResult;
   private QueryToolChest toolChest;
-  private Query baseQuery;
+
+  @MonotonicNonNull
+  private Query<?> baseQuery;
+  @MonotonicNonNull
+  private Set<String> userContextKeys;
 
   public QueryLifecycle(
-      final QueryToolChestWarehouse warehouse,
+      final QueryRunnerFactoryConglomerate conglomerate,
       final QuerySegmentWalker texasRanger,
       final GenericQueryMetricsFactory queryMetricsFactory,
       final ServiceEmitter emitter,
       final RequestLogger requestLogger,
       final AuthorizerMapper authorizerMapper,
       final DefaultQueryConfig defaultQueryConfig,
+      final AuthConfig authConfig,
       final long startMs,
       final long startNs
   )
   {
-    this.warehouse = warehouse;
+    this.conglomerate = conglomerate;
     this.texasRanger = texasRanger;
     this.queryMetricsFactory = queryMetricsFactory;
     this.emitter = emitter;
     this.requestLogger = requestLogger;
     this.authorizerMapper = authorizerMapper;
     this.defaultQueryConfig = defaultQueryConfig;
+    this.authConfig = authConfig;
     this.startMs = startMs;
     this.startNs = startNs;
   }
-
 
   /**
    * For callers who have already authorized their query, and where simplicity is desired over flexibility. This method
@@ -124,8 +142,7 @@ public class QueryLifecycle
    *
    * @return results
    */
-  @SuppressWarnings("unchecked")
-  public <T> Sequence<T> runSimple(
+  public <T> QueryResponse<T> runSimple(
       final Query<T> query,
       final AuthenticationResult authenticationResult,
       final Access authorizationResult
@@ -135,13 +152,14 @@ public class QueryLifecycle
 
     final Sequence<T> results;
 
+    final QueryResponse<T> queryResponse;
     try {
       preAuthorized(authenticationResult, authorizationResult);
       if (!authorizationResult.isAllowed()) {
-        throw new ISE("Unauthorized");
+        throw new ISE(Access.DEFAULT_ERROR_MESSAGE);
       }
 
-      final QueryLifecycle.QueryResponse queryResponse = execute();
+      queryResponse = execute();
       results = queryResponse.getResults();
     }
     catch (Throwable e) {
@@ -149,16 +167,25 @@ public class QueryLifecycle
       throw e;
     }
 
-    return Sequences.wrap(
-        results,
-        new SequenceWrapper()
-        {
-          @Override
-          public void after(final boolean isDone, final Throwable thrown)
-          {
-            emitLogsAndMetrics(thrown, null, -1);
-          }
-        }
+    /*
+     * It seems extremely weird that the below code is wrapping the Sequence in order to emitLogsAndMetrics.
+     * The Sequence was returned by the call to execute, it would be worthwile to figure out why this wrapping
+     * cannot be moved into execute().  We leave this as an exercise for the future, however as this oddity
+     * was discovered while just trying to expose HTTP response headers
+     */
+    return new QueryResponse<>(
+        Sequences.wrap(
+            results,
+            new SequenceWrapper()
+            {
+              @Override
+              public void after(final boolean isDone, final Throwable thrown)
+              {
+                emitLogsAndMetrics(thrown, null, -1);
+              }
+            }
+        ),
+        queryResponse.getResponseContext()
     );
   }
 
@@ -167,25 +194,20 @@ public class QueryLifecycle
    *
    * @param baseQuery the query
    */
-  @SuppressWarnings("unchecked")
-  public void initialize(final Query baseQuery)
+  public void initialize(final Query<?> baseQuery)
   {
     transition(State.NEW, State.INITIALIZED);
 
+    userContextKeys = new HashSet<>(baseQuery.getContext().keySet());
     String queryId = baseQuery.getId();
     if (Strings.isNullOrEmpty(queryId)) {
       queryId = UUID.randomUUID().toString();
     }
 
-    Map<String, Object> mergedUserAndConfigContext;
-    if (baseQuery.getContext() != null) {
-      mergedUserAndConfigContext = BaseQuery.computeOverriddenContext(defaultQueryConfig.getContext(), baseQuery.getContext());
-    } else {
-      mergedUserAndConfigContext = defaultQueryConfig.getContext();
-    }
-
-    this.baseQuery = baseQuery.withOverriddenContext(mergedUserAndConfigContext).withId(queryId);
-    this.toolChest = warehouse.getToolChest(baseQuery);
+    Map<String, Object> mergedUserAndConfigContext = QueryContexts.override(defaultQueryConfig.getContext(), baseQuery.getContext());
+    mergedUserAndConfigContext.put(BaseQuery.QUERY_ID, queryId);
+    this.baseQuery = baseQuery.withOverriddenContext(mergedUserAndConfigContext);
+    this.toolChest = conglomerate.getToolChest(this.baseQuery);
   }
 
   /**
@@ -199,14 +221,52 @@ public class QueryLifecycle
   public Access authorize(HttpServletRequest req)
   {
     transition(State.INITIALIZED, State.AUTHORIZING);
+    final Iterable<ResourceAction> resourcesToAuthorize = Iterables.concat(
+        Iterables.transform(
+            baseQuery.getDataSource().getTableNames(),
+            AuthorizationUtils.DATASOURCE_READ_RA_GENERATOR
+        ),
+        Iterables.transform(
+            authConfig.contextKeysToAuthorize(userContextKeys),
+            contextParam -> new ResourceAction(new Resource(contextParam, ResourceType.QUERY_CONTEXT), Action.WRITE)
+        )
+    );
     return doAuthorize(
         AuthorizationUtils.authenticationResultFromRequest(req),
         AuthorizationUtils.authorizeAllResourceActions(
             req,
-            Iterables.transform(
-                baseQuery.getDataSource().getTableNames(),
-                AuthorizationUtils.DATASOURCE_READ_RA_GENERATOR
-            ),
+            resourcesToAuthorize,
+            authorizerMapper
+        )
+    );
+  }
+
+  /**
+   * Authorize the query using the authentication result.
+   * Will return an Access object denoting whether the query is authorized or not.
+   * This method is to be used by the grpc-query-extension.
+   *
+   * @param authenticationResult authentication result indicating identity of the requester
+   * @return authorization result of requester
+   */
+  public Access authorize(AuthenticationResult authenticationResult)
+  {
+    transition(State.INITIALIZED, State.AUTHORIZING);
+    final Iterable<ResourceAction> resourcesToAuthorize = Iterables.concat(
+        Iterables.transform(
+            baseQuery.getDataSource().getTableNames(),
+            AuthorizationUtils.DATASOURCE_READ_RA_GENERATOR
+        ),
+        Iterables.transform(
+            authConfig.contextKeysToAuthorize(userContextKeys),
+            contextParam -> new ResourceAction(new Resource(contextParam, ResourceType.QUERY_CONTEXT), Action.WRITE)
+        )
+    );
+    return doAuthorize(
+        authenticationResult,
+        AuthorizationUtils.authorizeAllResourceActions(
+            authenticationResult,
+            resourcesToAuthorize,
             authorizerMapper
         )
     );
@@ -243,17 +303,18 @@ public class QueryLifecycle
    *
    * @return result sequence and response context
    */
-  public QueryResponse execute()
+  public <T> QueryResponse<T> execute()
   {
     transition(State.AUTHORIZED, State.EXECUTING);
 
     final ResponseContext responseContext = DirectDruidClient.makeResponseContextForQuery();
 
-    final Sequence res = QueryPlus.wrap(baseQuery)
+    @SuppressWarnings("unchecked")
+    final Sequence<T> res = QueryPlus.wrap((Query<T>) baseQuery)
                                   .withIdentity(authenticationResult.getIdentity())
                                   .run(texasRanger, responseContext);
 
-    return new QueryResponse(res == null ? Sequences.empty() : res, responseContext);
+    return new QueryResponse<>(res == null ? Sequences.empty() : res, responseContext);
   }
 
   /**
@@ -316,7 +377,11 @@ public class QueryLifecycle
 
       if (e != null) {
         statsMap.put("exception", e.toString());
-        log.noStackTrace().warn(e, "Exception while processing queryId [%s]", baseQuery.getId());
+        if (baseQuery.context().isDebug() || e.getMessage() == null) {
+          log.warn(e, "Exception while processing queryId [%s]", baseQuery.getId());
+        } else {
+          log.noStackTrace().warn(e, "Exception while processing queryId [%s]", baseQuery.getId());
+        }
         if (e instanceof QueryInterruptedException || e instanceof QueryTimeoutException) {
           // Mimic behavior from QueryResource, where this code was originally taken from.
           statsMap.put("interrupted", true);
@@ -338,9 +403,43 @@ public class QueryLifecycle
     }
   }
 
-  public Query getQuery()
+  @Nullable
+  public Query<?> getQuery()
   {
     return baseQuery;
+  }
+
+  public String getQueryId()
+  {
+    return baseQuery.getId();
+  }
+
+  public String threadName(String currThreadName)
+  {
+    return StringUtils.format(
+        "%s[%s_%s_%s]",
+        currThreadName,
+        baseQuery.getType(),
+        baseQuery.getDataSource().getTableNames(),
+        getQueryId()
+    );
+  }
+
+  private boolean isSerializeDateTimeAsLong()
+  {
+    final QueryContext queryContext = baseQuery.context();
+    final boolean shouldFinalize = queryContext.isFinalize(true);
+    return queryContext.isSerializeDateTimeAsLong(false)
+           || (!shouldFinalize && queryContext.isSerializeDateTimeAsLongInner(false));
+  }
+
+  public ObjectMapper newOutputWriter(ResourceIOReaderWriter ioReaderWriter)
+  {
+    return ioReaderWriter.getResponseWriter().newOutputWriter(
+        getToolChest(),
+        baseQuery,
+        isSerializeDateTimeAsLong()
+    );
   }
 
   public QueryToolChest getToolChest()
@@ -373,25 +472,4 @@ public class QueryLifecycle
     DONE
   }
 
-  public static class QueryResponse
-  {
-    private final Sequence results;
-    private final ResponseContext responseContext;
-
-    private QueryResponse(final Sequence results, final ResponseContext responseContext)
-    {
-      this.results = results;
-      this.responseContext = responseContext;
-    }
-
-    public Sequence getResults()
-    {
-      return results;
-    }
-
-    public ResponseContext getResponseContext()
-    {
-      return responseContext;
-    }
-  }
 }

@@ -25,7 +25,6 @@ import com.google.common.collect.Sets;
 import org.apache.commons.io.IOUtils;
 import org.apache.druid.java.util.common.FileUtils;
 import org.apache.druid.java.util.common.StringUtils;
-import org.apache.druid.java.util.common.guava.CloseQuietly;
 import org.apache.druid.java.util.common.io.smoosh.FileSmoosher;
 import org.apache.druid.java.util.common.io.smoosh.Smoosh;
 import org.apache.druid.java.util.common.io.smoosh.SmooshedFileMapper;
@@ -34,6 +33,7 @@ import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.TmpFileSegmentWriteOutMediumFactory;
 import org.apache.druid.segment.writeout.WriteOutBytes;
+import org.apache.druid.utils.CloseableUtils;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Ignore;
@@ -206,7 +206,8 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
           "offset",
           offsetChunkFactor,
           byteOrder,
-          compressionStrategy
+          compressionStrategy,
+          segmentWriteOutMedium.getCloser()
       );
       CompressedVSizeColumnarIntsSerializer valueWriter = new CompressedVSizeColumnarIntsSerializer(
           TEST_COLUMN_NAME,
@@ -215,7 +216,8 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
           maxValue,
           valueChunkFactor,
           byteOrder,
-          compressionStrategy
+          compressionStrategy,
+          segmentWriteOutMedium.getCloser()
       );
       V3CompressedVSizeColumnarMultiIntsSerializer writer =
           new V3CompressedVSizeColumnarMultiIntsSerializer(TEST_COLUMN_NAME, offsetWriter, valueWriter);
@@ -271,7 +273,6 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
     try (SegmentWriteOutMedium segmentWriteOutMedium = new OffHeapMemorySegmentWriteOutMedium()) {
       CompressedColumnarIntsSerializer offsetWriter = new CompressedColumnarIntsSerializer(
           TEST_COLUMN_NAME,
-          segmentWriteOutMedium,
           offsetChunkFactor,
           byteOrder,
           compressionStrategy,
@@ -279,24 +280,27 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
               segmentWriteOutMedium,
               "offset",
               compressionStrategy,
-              Long.BYTES * 250000
-          )
+              Long.BYTES * 250000,
+              segmentWriteOutMedium.getCloser()
+          ),
+          segmentWriteOutMedium.getCloser()
       );
 
       GenericIndexedWriter genericIndexed = GenericIndexedWriter.ofCompressedByteBuffers(
           segmentWriteOutMedium,
           "value",
           compressionStrategy,
-          Long.BYTES * 250000
+          Long.BYTES * 250000,
+          segmentWriteOutMedium.getCloser()
       );
       CompressedVSizeColumnarIntsSerializer valueWriter = new CompressedVSizeColumnarIntsSerializer(
           TEST_COLUMN_NAME,
-          segmentWriteOutMedium,
           maxValue,
           valueChunkFactor,
           byteOrder,
           compressionStrategy,
-          genericIndexed
+          genericIndexed,
+          segmentWriteOutMedium.getCloser()
       );
       V3CompressedVSizeColumnarMultiIntsSerializer writer =
           new V3CompressedVSizeColumnarMultiIntsSerializer(TEST_COLUMN_NAME, offsetWriter, valueWriter);
@@ -322,12 +326,17 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
           Assert.assertEquals(subVals.get(j), vals.get(i)[j]);
         }
       }
-      CloseQuietly.close(columnarMultiInts);
-      mapper.close();
+      CloseableUtils.closeAll(columnarMultiInts, mapper);
     }
   }
 
-  private void generateV2SerializedSizeAndData(long numRows, int maxValue, int maxValuesPerRow, int offsetChunkFactor, int valueChunkFactor) throws Exception
+  private void generateV2SerializedSizeAndData(
+      long numRows,
+      int maxValue,
+      int maxValuesPerRow,
+      int offsetChunkFactor,
+      int valueChunkFactor
+  ) throws Exception
   {
     File tmpDirectory = FileUtils.createTempDir(StringUtils.format(
         "CompressedVSizeIndexedV3WriterTest_%d_%d",
@@ -342,7 +351,6 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
     ) {
       CompressedColumnarIntsSerializer offsetWriter = new CompressedColumnarIntsSerializer(
           TEST_COLUMN_NAME,
-          segmentWriteOutMedium,
           offsetChunkFactor,
           byteOrder,
           compressionStrategy,
@@ -350,24 +358,27 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
               segmentWriteOutMedium,
               "offset",
               compressionStrategy,
-              Long.BYTES * 250000
-          )
+              Long.BYTES * 250000,
+              segmentWriteOutMedium.getCloser()
+          ),
+          segmentWriteOutMedium.getCloser()
       );
 
       GenericIndexedWriter genericIndexed = GenericIndexedWriter.ofCompressedByteBuffers(
           segmentWriteOutMedium,
           "value",
           compressionStrategy,
-          Long.BYTES * 250000
+          Long.BYTES * 250000,
+          segmentWriteOutMedium.getCloser()
       );
       CompressedVSizeColumnarIntsSerializer valueWriter = new CompressedVSizeColumnarIntsSerializer(
           TEST_COLUMN_NAME,
-          segmentWriteOutMedium,
           maxValue,
           valueChunkFactor,
           byteOrder,
           compressionStrategy,
-          genericIndexed
+          genericIndexed,
+          segmentWriteOutMedium.getCloser()
       );
       V3CompressedVSizeColumnarMultiIntsSerializer writer =
           new V3CompressedVSizeColumnarMultiIntsSerializer(TEST_COLUMN_NAME, offsetWriter, valueWriter);
@@ -395,8 +406,7 @@ public class V3CompressedVSizeColumnarMultiIntsSerializerTest
           Assert.assertEquals(subVals.get(j), expected[j]);
         }
       }
-      CloseQuietly.close(columnarMultiInts);
-      mapper.close();
+      CloseableUtils.closeAll(columnarMultiInts, mapper);
     }
   }
 }

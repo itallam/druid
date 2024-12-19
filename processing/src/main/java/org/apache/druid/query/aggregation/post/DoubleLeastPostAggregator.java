@@ -27,7 +27,8 @@ import org.apache.druid.query.Queries;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.PostAggregator;
 import org.apache.druid.query.cache.CacheKeyBuilder;
-import org.apache.druid.segment.column.ValueType;
+import org.apache.druid.segment.ColumnInspector;
+import org.apache.druid.segment.column.ColumnType;
 
 import java.util.Comparator;
 import java.util.HashSet;
@@ -52,7 +53,11 @@ public class DoubleLeastPostAggregator implements PostAggregator
       @JsonProperty("fields") List<PostAggregator> fields
   )
   {
-    Preconditions.checkArgument(fields != null && fields.size() > 0, "Illegal number of fields[%s], must be > 0");
+    Preconditions.checkArgument(
+        fields != null && fields.size() > 0,
+        "Illegal number of fields[%s], must be > 0",
+        fields.size()
+    );
 
     this.name = name;
     this.fields = fields;
@@ -101,9 +106,9 @@ public class DoubleLeastPostAggregator implements PostAggregator
   }
 
   @Override
-  public ValueType getType()
+  public ColumnType getType(ColumnInspector signature)
   {
-    return ValueType.DOUBLE;
+    return ColumnType.DOUBLE;
   }
 
   @Override

@@ -58,10 +58,6 @@ public class TestNGGroup
 
   public static final String QUERY_ERROR = "query-error";
 
-  public static final String CLI_INDEXER = "cli-indexer";
-
-  public static final String REALTIME_INDEX = "realtime-index";
-
   /**
    * This group can only be run individually using -Dgroups=security since it requires specific test data setup.
    */
@@ -155,4 +151,16 @@ public class TestNGGroup
   public static final String KINESIS_DATA_FORMAT = "kinesis-data-format";
 
   public static final String HIGH_AVAILABILTY = "high-availability";
+
+  public static final String SHUFFLE_DEEP_STORE = "shuffle-deep-store";
+
+  public static final String CUSTOM_COORDINATOR_DUTIES = "custom-coordinator-duties";
+
+  public static final String HTTP_ENDPOINT = "http-endpoint";
+
+  public static final String CENTRALIZED_DATASOURCE_SCHEMA = "centralized-datasource-schema";
+
+  public static final String CDS_TASK_SCHEMA_PUBLISH_DISABLED = "cds-task-schema-publish-disabled";
+
+  public static final String CDS_COORDINATOR_METADATA_QUERY_DISABLED = "cds-coordinator-metadata-query-disabled";
 }

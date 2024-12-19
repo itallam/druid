@@ -34,12 +34,11 @@ import org.apache.druid.segment.filter.DimensionPredicateFilter;
 import org.apache.druid.segment.filter.SelectorFilter;
 
 import javax.annotation.Nullable;
-import java.util.Collections;
 import java.util.Objects;
 import java.util.Set;
 
 /**
- *
+ * Recommended to use {@link EqualityFilter} or {@link NullFilter} instead
  */
 public class SelectorDimFilter extends AbstractOptimizableDimFilter implements DimFilter
 {
@@ -94,9 +93,11 @@ public class SelectorDimFilter extends AbstractOptimizableDimFilter implements D
   }
 
   @Override
-  public DimFilter optimize()
+  public DimFilter optimize(final boolean mayIncludeUnknown)
   {
-    return new InDimFilter(dimension, Collections.singleton(value), extractionFn, filterTuning).optimize();
+    final InDimFilter.ValuesSet valuesSet = new InDimFilter.ValuesSet();
+    valuesSet.add(value);
+    return new InDimFilter(dimension, valuesSet, extractionFn, filterTuning).optimize(mayIncludeUnknown);
   }
 
   @Override
@@ -115,6 +116,9 @@ public class SelectorDimFilter extends AbstractOptimizableDimFilter implements D
     return dimension;
   }
 
+  /**
+   * Value to filter against. If {@code null}, then the meaning is `is null`.
+   */
   @Nullable
   @JsonProperty
   public String getValue()
@@ -124,14 +128,15 @@ public class SelectorDimFilter extends AbstractOptimizableDimFilter implements D
 
   @Nullable
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public ExtractionFn getExtractionFn()
   {
     return extractionFn;
   }
 
   @Nullable
-  @JsonInclude(JsonInclude.Include.NON_NULL)
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   public FilterTuning getFilterTuning()
   {
     return filterTuning;

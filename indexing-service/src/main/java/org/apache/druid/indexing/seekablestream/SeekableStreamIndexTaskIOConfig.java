@@ -19,6 +19,7 @@
 
 package org.apache.druid.indexing.seekablestream;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -41,6 +42,7 @@ public abstract class SeekableStreamIndexTaskIOConfig<PartitionIdType, SequenceO
   private final Optional<DateTime> minimumMessageTime;
   private final Optional<DateTime> maximumMessageTime;
   private final InputFormat inputFormat;
+  private final Long refreshRejectionPeriodsInMinutes;
 
   public SeekableStreamIndexTaskIOConfig(
       @Nullable final Integer taskGroupId, // can be null for backward compabitility
@@ -50,7 +52,8 @@ public abstract class SeekableStreamIndexTaskIOConfig<PartitionIdType, SequenceO
       final Boolean useTransaction,
       final DateTime minimumMessageTime,
       final DateTime maximumMessageTime,
-      @Nullable final InputFormat inputFormat
+      @Nullable final InputFormat inputFormat,
+      @Nullable final Long refreshRejectionPeriodsInMinutes // can be null for backward compabitility
   )
   {
     this.taskGroupId = taskGroupId;
@@ -61,6 +64,7 @@ public abstract class SeekableStreamIndexTaskIOConfig<PartitionIdType, SequenceO
     this.minimumMessageTime = Optional.fromNullable(minimumMessageTime);
     this.maximumMessageTime = Optional.fromNullable(maximumMessageTime);
     this.inputFormat = inputFormat;
+    this.refreshRejectionPeriodsInMinutes = refreshRejectionPeriodsInMinutes;
 
     Preconditions.checkArgument(
         startSequenceNumbers.getStream().equals(endSequenceNumbers.getStream()),
@@ -107,12 +111,14 @@ public abstract class SeekableStreamIndexTaskIOConfig<PartitionIdType, SequenceO
   }
 
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_ABSENT)
   public Optional<DateTime> getMaximumMessageTime()
   {
     return maximumMessageTime;
   }
 
   @JsonProperty
+  @JsonInclude(JsonInclude.Include.NON_ABSENT)
   public Optional<DateTime> getMinimumMessageTime()
   {
     return minimumMessageTime;
@@ -120,6 +126,7 @@ public abstract class SeekableStreamIndexTaskIOConfig<PartitionIdType, SequenceO
 
   @Nullable
   @JsonProperty("inputFormat")
+  @JsonInclude(JsonInclude.Include.NON_NULL)
   private InputFormat getGivenInputFormat()
   {
     return inputFormat;
@@ -129,5 +136,12 @@ public abstract class SeekableStreamIndexTaskIOConfig<PartitionIdType, SequenceO
   public InputFormat getInputFormat()
   {
     return inputFormat;
+  }
+
+  @Nullable
+  @JsonProperty
+  public Long getRefreshRejectionPeriodsInMinutes()
+  {
+    return refreshRejectionPeriodsInMinutes;
   }
 }

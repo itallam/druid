@@ -19,8 +19,6 @@
 
 package org.apache.druid.segment.virtual;
 
-import com.google.common.base.Predicate;
-import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.apache.druid.common.config.NullHandling;
@@ -35,6 +33,9 @@ import org.apache.druid.query.dimension.DimensionSpec;
 import org.apache.druid.query.dimension.ExtractionDimensionSpec;
 import org.apache.druid.query.expression.TestExprMacroTable;
 import org.apache.druid.query.extraction.BucketExtractionFn;
+import org.apache.druid.query.filter.DruidPredicateFactory;
+import org.apache.druid.query.filter.DruidPredicateMatch;
+import org.apache.druid.query.filter.StringPredicateDruidPredicateFactory;
 import org.apache.druid.query.filter.ValueMatcher;
 import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
 import org.apache.druid.segment.BaseFloatColumnValueSelector;
@@ -42,12 +43,15 @@ import org.apache.druid.segment.BaseLongColumnValueSelector;
 import org.apache.druid.segment.BaseObjectColumnValueSelector;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.ColumnValueSelector;
+import org.apache.druid.segment.ConstantDimensionSelector;
+import org.apache.druid.segment.ConstantMultiValueDimensionSelector;
 import org.apache.druid.segment.DimensionSelector;
 import org.apache.druid.segment.IdLookup;
 import org.apache.druid.segment.RowAdapters;
 import org.apache.druid.segment.RowBasedColumnSelectorFactory;
 import org.apache.druid.segment.column.ColumnCapabilities;
 import org.apache.druid.segment.column.ColumnCapabilitiesImpl;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.data.IndexedInts;
@@ -111,90 +115,90 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
       ImmutableMap.of(
           "x", 3L,
           "y", 4L,
-          "b", Arrays.asList(new String[]{"3", null, "5"})
+          "b", Arrays.asList("3", null, "5")
       )
   );
 
   private static final ExpressionVirtualColumn X_PLUS_Y = new ExpressionVirtualColumn(
       "expr",
       "x + y",
-      ValueType.FLOAT,
+      ColumnType.FLOAT,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn CONSTANT_LIKE = new ExpressionVirtualColumn(
       "expr",
       "like('foo', 'f%')",
-      ValueType.FLOAT,
+      ColumnType.FLOAT,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn CONSTANT_NULL_ARITHMETIC = new ExpressionVirtualColumn(
       "expr",
       "2.1 + null",
-      ValueType.FLOAT,
+      ColumnType.FLOAT,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn Z_LIKE = new ExpressionVirtualColumn(
       "expr",
       "like(z, 'f%')",
-      ValueType.FLOAT,
+      ColumnType.FLOAT,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn Z_CONCAT_X = new ExpressionVirtualColumn(
       "expr",
       "z + cast(x, 'string')",
-      ValueType.STRING,
+      ColumnType.STRING,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn Z_CONCAT_NONEXISTENT = new ExpressionVirtualColumn(
       "expr",
       "concat(z, nonexistent)",
-      ValueType.STRING,
+      ColumnType.STRING,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn TIME_FLOOR = new ExpressionVirtualColumn(
       "expr",
       "timestamp_floor(__time, 'P1D')",
-      ValueType.LONG,
+      ColumnType.LONG,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn SCALE_LONG = new ExpressionVirtualColumn(
       "expr",
       "x * 2",
-      ValueType.LONG,
+      ColumnType.LONG,
       TestExprMacroTable.INSTANCE
   );
   private static final ExpressionVirtualColumn SCALE_FLOAT = new ExpressionVirtualColumn(
       "expr",
       "x * 2",
-      ValueType.FLOAT,
+      ColumnType.FLOAT,
       TestExprMacroTable.INSTANCE
   );
 
   private static final ExpressionVirtualColumn SCALE_LIST_IMPLICIT = new ExpressionVirtualColumn(
       "expr",
       "b * 2",
-      ValueType.STRING,
+      ColumnType.STRING,
       TestExprMacroTable.INSTANCE
   );
 
   private static final ExpressionVirtualColumn SCALE_LIST_EXPLICIT = new ExpressionVirtualColumn(
       "expr",
       "map(b -> b * 2, b)",
-      ValueType.STRING,
+      ColumnType.STRING,
       TestExprMacroTable.INSTANCE
   );
 
   private static final ExpressionVirtualColumn SCALE_LIST_SELF_IMPLICIT = new ExpressionVirtualColumn(
       "expr",
       "b * b",
-      ValueType.STRING,
+      ColumnType.STRING,
       TestExprMacroTable.INSTANCE
   );
 
   private static final ExpressionVirtualColumn SCALE_LIST_SELF_EXPLICIT = new ExpressionVirtualColumn(
       "expr",
       "map(b -> b * b, b)",
-      ValueType.STRING,
+      ColumnType.STRING,
       TestExprMacroTable.INSTANCE
   );
 
@@ -203,6 +207,7 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
       RowAdapters.standardRow(),
       CURRENT_ROW::get,
       RowSignature.empty(),
+      false,
       false
   );
 
@@ -290,9 +295,9 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
           }
 
           @Override
-          public ValueMatcher makeValueMatcher(Predicate<String> predicate)
+          public ValueMatcher makeValueMatcher(DruidPredicateFactory predicateFactory)
           {
-            return delegate.makeValueMatcher(predicate);
+            return delegate.makeValueMatcher(predicateFactory);
           }
 
           @Override
@@ -355,7 +360,7 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
       @Override
       public ColumnCapabilities getColumnCapabilities(String column)
       {
-        return new ColumnCapabilitiesImpl().setType(ValueType.STRING)
+        return new ColumnCapabilitiesImpl().setType(ColumnType.STRING)
                                            .setHasMultipleValues(true)
                                            .setDictionaryEncoded(true);
       }
@@ -468,38 +473,42 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
 
     final ValueMatcher nullMatcher = selector.makeValueMatcher((String) null);
     final ValueMatcher fiveMatcher = selector.makeValueMatcher("5");
-    final ValueMatcher nonNullMatcher = selector.makeValueMatcher(Predicates.notNull());
+    final ValueMatcher nonNullMatcher = selector.makeValueMatcher(
+        StringPredicateDruidPredicateFactory.of(
+            value -> value == null ? DruidPredicateMatch.UNKNOWN : DruidPredicateMatch.TRUE
+        )
+    );
 
     CURRENT_ROW.set(ROW0);
-    Assert.assertEquals(true, nullMatcher.matches());
-    Assert.assertEquals(false, fiveMatcher.matches());
-    Assert.assertEquals(false, nonNullMatcher.matches());
+    Assert.assertEquals(true, nullMatcher.matches(false));
+    Assert.assertEquals(false, fiveMatcher.matches(false));
+    Assert.assertEquals(false, nonNullMatcher.matches(false));
     Assert.assertEquals(null, selector.lookupName(selector.getRow().get(0)));
 
     CURRENT_ROW.set(ROW1);
     if (NullHandling.replaceWithDefault()) {
-      Assert.assertEquals(false, nullMatcher.matches());
-      Assert.assertEquals(false, fiveMatcher.matches());
-      Assert.assertEquals(true, nonNullMatcher.matches());
+      Assert.assertEquals(false, nullMatcher.matches(false));
+      Assert.assertEquals(false, fiveMatcher.matches(false));
+      Assert.assertEquals(true, nonNullMatcher.matches(false));
       Assert.assertEquals("4", selector.lookupName(selector.getRow().get(0)));
     } else {
       // y is null in row1
-      Assert.assertEquals(true, nullMatcher.matches());
-      Assert.assertEquals(false, fiveMatcher.matches());
-      Assert.assertEquals(false, nonNullMatcher.matches());
+      Assert.assertEquals(true, nullMatcher.matches(false));
+      Assert.assertEquals(false, fiveMatcher.matches(false));
+      Assert.assertEquals(false, nonNullMatcher.matches(false));
       Assert.assertEquals(null, selector.lookupName(selector.getRow().get(0)));
     }
 
     CURRENT_ROW.set(ROW2);
-    Assert.assertEquals(false, nullMatcher.matches());
-    Assert.assertEquals(false, fiveMatcher.matches());
-    Assert.assertEquals(true, nonNullMatcher.matches());
+    Assert.assertEquals(false, nullMatcher.matches(false));
+    Assert.assertEquals(false, fiveMatcher.matches(false));
+    Assert.assertEquals(true, nonNullMatcher.matches(false));
     Assert.assertEquals("5.1", selector.lookupName(selector.getRow().get(0)));
 
     CURRENT_ROW.set(ROW3);
-    Assert.assertEquals(false, nullMatcher.matches());
-    Assert.assertEquals(true, fiveMatcher.matches());
-    Assert.assertEquals(true, nonNullMatcher.matches());
+    Assert.assertEquals(false, nullMatcher.matches(false));
+    Assert.assertEquals(true, fiveMatcher.matches(false));
+    Assert.assertEquals(true, nonNullMatcher.matches(false));
     Assert.assertEquals("5", selector.lookupName(selector.getRow().get(0)));
   }
 
@@ -511,10 +520,14 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
         COLUMN_SELECTOR_FACTORY
     );
 
-    final ValueMatcher nonNullMatcher = selector.makeValueMatcher(Predicates.notNull());
+    final ValueMatcher nonNullMatcher = selector.makeValueMatcher(
+        StringPredicateDruidPredicateFactory.of(
+            value -> value == null ? DruidPredicateMatch.UNKNOWN : DruidPredicateMatch.TRUE
+        )
+    );
 
     CURRENT_ROW.set(ROW0);
-    Assert.assertEquals(false, nonNullMatcher.matches());
+    Assert.assertEquals(false, nonNullMatcher.matches(false));
 
 
   }
@@ -592,38 +605,42 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
 
     final ValueMatcher nullMatcher = selector.makeValueMatcher((String) null);
     final ValueMatcher fiveMatcher = selector.makeValueMatcher("5");
-    final ValueMatcher nonNullMatcher = selector.makeValueMatcher(Predicates.notNull());
+    final ValueMatcher nonNullMatcher = selector.makeValueMatcher(
+        StringPredicateDruidPredicateFactory.of(
+            value -> value == null ? DruidPredicateMatch.UNKNOWN : DruidPredicateMatch.TRUE
+        )
+    );
 
     CURRENT_ROW.set(ROW0);
-    Assert.assertEquals(true, nullMatcher.matches());
-    Assert.assertEquals(false, fiveMatcher.matches());
-    Assert.assertEquals(false, nonNullMatcher.matches());
+    Assert.assertEquals(true, nullMatcher.matches(false));
+    Assert.assertEquals(false, fiveMatcher.matches(false));
+    Assert.assertEquals(false, nonNullMatcher.matches(false));
     Assert.assertEquals(null, selector.lookupName(selector.getRow().get(0)));
 
     CURRENT_ROW.set(ROW1);
     if (NullHandling.replaceWithDefault()) {
-      Assert.assertEquals(false, nullMatcher.matches());
-      Assert.assertEquals(false, fiveMatcher.matches());
-      Assert.assertEquals(true, nonNullMatcher.matches());
+      Assert.assertEquals(false, nullMatcher.matches(false));
+      Assert.assertEquals(false, fiveMatcher.matches(false));
+      Assert.assertEquals(true, nonNullMatcher.matches(false));
       Assert.assertEquals("4", selector.lookupName(selector.getRow().get(0)));
     } else {
       // y is null in row1
-      Assert.assertEquals(true, nullMatcher.matches());
-      Assert.assertEquals(false, fiveMatcher.matches());
-      Assert.assertEquals(false, nonNullMatcher.matches());
+      Assert.assertEquals(true, nullMatcher.matches(false));
+      Assert.assertEquals(false, fiveMatcher.matches(false));
+      Assert.assertEquals(false, nonNullMatcher.matches(false));
       Assert.assertEquals(null, selector.lookupName(selector.getRow().get(0)));
     }
 
     CURRENT_ROW.set(ROW2);
-    Assert.assertEquals(false, nullMatcher.matches());
-    Assert.assertEquals(true, fiveMatcher.matches());
-    Assert.assertEquals(true, nonNullMatcher.matches());
+    Assert.assertEquals(false, nullMatcher.matches(false));
+    Assert.assertEquals(true, fiveMatcher.matches(false));
+    Assert.assertEquals(true, nonNullMatcher.matches(false));
     Assert.assertEquals("5.1", selector.lookupName(selector.getRow().get(0)));
 
     CURRENT_ROW.set(ROW3);
-    Assert.assertEquals(false, nullMatcher.matches());
-    Assert.assertEquals(true, fiveMatcher.matches());
-    Assert.assertEquals(true, nonNullMatcher.matches());
+    Assert.assertEquals(false, nullMatcher.matches(false));
+    Assert.assertEquals(true, fiveMatcher.matches(false));
+    Assert.assertEquals(true, nonNullMatcher.matches(false));
     Assert.assertEquals("5", selector.lookupName(selector.getRow().get(0)));
   }
 
@@ -711,8 +728,8 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
 
     CURRENT_ROW.set(ROW0);
     Assert.assertEquals(DateTimes.of("2000-01-01").getMillis(), selector.getLong());
-    Assert.assertEquals((float) DateTimes.of("2000-01-01").getMillis(), selector.getFloat(), 0.0f);
-    Assert.assertEquals((double) DateTimes.of("2000-01-01").getMillis(), selector.getDouble(), 0.0d);
+    Assert.assertEquals(DateTimes.of("2000-01-01").getMillis(), selector.getFloat(), 0.0f);
+    Assert.assertEquals(DateTimes.of("2000-01-01").getMillis(), selector.getDouble(), 0.0d);
     Assert.assertEquals(DateTimes.of("2000-01-01").getMillis(), selector.getObject());
 
     CURRENT_ROW.set(ROW1);
@@ -742,7 +759,8 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
         RowBasedColumnSelectorFactory.create(
             RowAdapters.standardRow(),
             CURRENT_ROW::get,
-            RowSignature.builder().add("x", ValueType.LONG).build(),
+            RowSignature.builder().add("x", ColumnType.LONG).build(),
+            false,
             false
         ),
         Parser.parse(SCALE_LONG.getExpression(), TestExprMacroTable.INSTANCE)
@@ -765,7 +783,8 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
         RowBasedColumnSelectorFactory.create(
             RowAdapters.standardRow(),
             CURRENT_ROW::get,
-            RowSignature.builder().add("x", ValueType.DOUBLE).build(),
+            RowSignature.builder().add("x", ColumnType.DOUBLE).build(),
+            false,
             false
         ),
         Parser.parse(SCALE_FLOAT.getExpression(), TestExprMacroTable.INSTANCE)
@@ -788,7 +807,8 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
         RowBasedColumnSelectorFactory.create(
             RowAdapters.standardRow(),
             CURRENT_ROW::get,
-            RowSignature.builder().add("x", ValueType.FLOAT).build(),
+            RowSignature.builder().add("x", ColumnType.FLOAT).build(),
+            false,
             false
         ),
         Parser.parse(SCALE_FLOAT.getExpression(), TestExprMacroTable.INSTANCE)
@@ -826,5 +846,36 @@ public class ExpressionVirtualColumnTest extends InitializedNullHandlingTest
     Assert.assertTrue(caps.hasMultipleValues().isUnknown());
     Assert.assertTrue(caps.hasMultipleValues().isMaybeTrue());
     Assert.assertFalse(caps.hasSpatialIndexes());
+  }
+
+  @Test
+  public void testConstantDimensionSelectors()
+  {
+    ExpressionVirtualColumn constant = new ExpressionVirtualColumn(
+        "constant",
+        Parser.parse("1 + 2", TestExprMacroTable.INSTANCE),
+        ColumnType.LONG
+    );
+    DimensionSelector constantSelector = constant.makeDimensionSelector(
+        DefaultDimensionSpec.of("constant"),
+        COLUMN_SELECTOR_FACTORY
+    );
+    Assert.assertTrue(constantSelector instanceof ConstantDimensionSelector);
+    Assert.assertEquals("3", constantSelector.getObject());
+
+
+    ExpressionVirtualColumn multiConstant = new ExpressionVirtualColumn(
+        "multi",
+        Parser.parse("string_to_array('a,b,c', ',')", TestExprMacroTable.INSTANCE),
+        ColumnType.STRING
+    );
+
+    DimensionSelector multiConstantSelector = multiConstant.makeDimensionSelector(
+        DefaultDimensionSpec.of("multiConstant"),
+        COLUMN_SELECTOR_FACTORY
+    );
+
+    Assert.assertTrue(multiConstantSelector instanceof ConstantMultiValueDimensionSelector);
+    Assert.assertEquals(ImmutableList.of("a", "b", "c"), multiConstantSelector.getObject());
   }
 }

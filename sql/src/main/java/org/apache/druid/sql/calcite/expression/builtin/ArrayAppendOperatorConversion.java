@@ -19,61 +19,37 @@
 
 package org.apache.druid.sql.calcite.expression.builtin;
 
-import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.sql.SqlFunction;
 import org.apache.calcite.sql.SqlFunctionCategory;
-import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.type.OperandTypes;
-import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeFamily;
-import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.sql.calcite.expression.DruidExpression;
+import org.apache.druid.sql.calcite.expression.DirectOperatorConversion;
 import org.apache.druid.sql.calcite.expression.OperatorConversions;
-import org.apache.druid.sql.calcite.expression.SqlOperatorConversion;
-import org.apache.druid.sql.calcite.planner.PlannerContext;
+import org.apache.druid.sql.calcite.planner.Calcites;
 
-public class ArrayAppendOperatorConversion implements SqlOperatorConversion
+public class ArrayAppendOperatorConversion extends DirectOperatorConversion
 {
   private static final SqlFunction SQL_FUNCTION = OperatorConversions
       .operatorBuilder("ARRAY_APPEND")
       .operandTypeChecker(
           OperandTypes.sequence(
-              "(array,expr)",
+              "'ARRAY_APPEND(array, expr)'",
               OperandTypes.or(
                   OperandTypes.family(SqlTypeFamily.ARRAY),
                   OperandTypes.family(SqlTypeFamily.STRING)
               ),
               OperandTypes.or(
-                OperandTypes.family(SqlTypeFamily.STRING),
-                OperandTypes.family(SqlTypeFamily.NUMERIC)
+                  OperandTypes.family(SqlTypeFamily.STRING),
+                  OperandTypes.family(SqlTypeFamily.NUMERIC)
               )
           )
       )
       .functionCategory(SqlFunctionCategory.STRING)
-      .returnTypeInference(ReturnTypes.ARG0_NULLABLE)
+      .returnTypeInference(Calcites.ARG0_NULLABLE_ARRAY_RETURN_TYPE_INFERENCE)
       .build();
 
-  @Override
-  public SqlOperator calciteOperator()
+  public ArrayAppendOperatorConversion()
   {
-    return SQL_FUNCTION;
-  }
-
-  @Override
-  public DruidExpression toDruidExpression(
-      final PlannerContext plannerContext,
-      final RowSignature rowSignature,
-      final RexNode rexNode
-  )
-  {
-    return OperatorConversions.convertCall(
-        plannerContext,
-        rowSignature,
-        rexNode,
-        druidExpressions -> DruidExpression.of(
-            null,
-            DruidExpression.functionCall("array_append", druidExpressions)
-        )
-    );
+    super(SQL_FUNCTION, "array_append");
   }
 }

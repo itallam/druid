@@ -19,8 +19,8 @@
 
 package org.apache.druid.query.expression;
 
-import com.google.common.base.Preconditions;
 import org.apache.druid.common.config.NullHandling;
+import org.apache.druid.error.InvalidInput;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.granularity.PeriodGranularity;
@@ -35,13 +35,6 @@ import javax.annotation.Nullable;
 
 public class ExprUtils
 {
-  private static final Expr.ObjectBinding NIL_BINDINGS = name -> null;
-
-  public static Expr.ObjectBinding nilBindings()
-  {
-    return NIL_BINDINGS;
-  }
-
   static DateTimeZone toTimeZone(final Expr timeZoneArg)
   {
     if (!timeZoneArg.isLiteral()) {
@@ -53,13 +46,25 @@ public class ExprUtils
   }
 
   static PeriodGranularity toPeriodGranularity(
+      final Expr wrappingExpr,
       final Expr periodArg,
       @Nullable final Expr originArg,
       @Nullable final Expr timeZoneArg,
       final Expr.ObjectBinding bindings
   )
   {
-    final Period period = new Period(periodArg.eval(bindings).asString());
+    final Period period;
+    try {
+      period = new Period(periodArg.eval(bindings).asString());
+    }
+    catch (IllegalArgumentException iae) {
+      throw InvalidInput.exception(
+          "Invalid period[%s] specified for expression[%s]: [%s]",
+          periodArg.stringify(), 
+          wrappingExpr.stringify(),
+          iae.getMessage()
+      );
+    }
     final DateTime origin;
     final DateTimeZone timeZone;
 
@@ -74,10 +79,10 @@ public class ExprUtils
       origin = null;
     } else {
       Chronology chronology = timeZone == null ? ISOChronology.getInstanceUTC() : ISOChronology.getInstance(timeZone);
-      final Object value = originArg.eval(bindings).value();
+      final Object value = originArg.eval(bindings).valueOrDefault();
       if (value instanceof String && NullHandling.isNullOrEquivalent((String) value)) {
         // We get a blank string here, when sql compatible null handling is enabled
-        // and expression contains empty string for for origin
+        // and expression contains empty string for origin
         // e.g timestamp_floor(\"__time\",'PT1M','','UTC')
         origin = null;
       } else {
@@ -86,17 +91,6 @@ public class ExprUtils
     }
 
     return new PeriodGranularity(period, origin, timeZone);
-  }
-
-  static String createErrMsg(String functionName, String msg)
-  {
-    String prefix = "Function[" + functionName + "] ";
-    return prefix + msg;
-  }
-
-  static void checkLiteralArgument(String functionName, Expr arg, String argName)
-  {
-    Preconditions.checkArgument(arg.isLiteral(), createErrMsg(functionName, argName + " arg must be a literal"));
   }
 
   /**
@@ -110,19 +104,6 @@ public class ExprUtils
   static boolean isStringLiteral(final Expr expr)
   {
     return (expr.isLiteral() && expr.getLiteralValue() instanceof String)
-           || (NullHandling.replaceWithDefault() && isNullLiteral(expr));
-  }
-
-  /**
-   * True if Expr is a null literal.
-   *
-   * In non-SQL-compliant null handling mode, this method will return true for either a null literal or an empty string
-   * literal (they are treated equivalently and we cannot tell the difference).
-   *
-   * In SQL-compliant null handling mode, this method will only return true for an actual null literal.
-   */
-  static boolean isNullLiteral(final Expr expr)
-  {
-    return expr.isLiteral() && expr.getLiteralValue() == null;
+           || (NullHandling.replaceWithDefault() && expr.isNullLiteral());
   }
 }

@@ -126,7 +126,7 @@ class RangerDruidResource extends RangerAccessResourceImpl
 {
   public RangerDruidResource(Resource resource)
   {
-    setValue(resource.getType().name().toLowerCase(Locale.ENGLISH), resource.getName());
+    setValue(resource.getType().toLowerCase(Locale.ENGLISH), resource.getName());
   }
 }
 
@@ -134,7 +134,7 @@ class RangerDruidAccessRequest extends RangerAccessRequestImpl
 {
   public RangerDruidAccessRequest(RangerDruidResource resource, String user, Set<String> userGroups, Action action)
   {
-    super(resource, action.name().toLowerCase(Locale.ENGLISH), user, userGroups);
+    super(resource, action.name().toLowerCase(Locale.ENGLISH), user, userGroups, null);
     setAccessTime(new Date());
   }
 }

@@ -26,6 +26,9 @@ import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
 import org.apache.druid.math.expr.ExprMacroTable;
+import org.apache.druid.math.expr.ExpressionType;
+import org.apache.druid.math.expr.InputBindings;
+import org.apache.druid.math.expr.Parser;
 import org.joda.time.DateTime;
 import org.joda.time.Days;
 import org.joda.time.Minutes;
@@ -50,14 +53,14 @@ public class TimestampShiftMacroTest extends MacroTestBase
   @Test
   public void testZeroArguments()
   {
-    expectException(IAE.class, "Function[timestamp_shift] must have 3 to 4 arguments");
+    expectException(IAE.class, "Function[timestamp_shift] requires 3 to 4 arguments");
     apply(Collections.emptyList());
   }
 
   @Test
   public void testOneArguments()
   {
-    expectException(IAE.class, "Function[timestamp_shift] must have 3 to 4 arguments");
+    expectException(IAE.class, "Function[timestamp_shift] requires 3 to 4 arguments");
     apply(
         ImmutableList.of(
             ExprEval.of(timestamp.getMillis()).toExpr()
@@ -67,7 +70,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
   @Test
   public void testTwoArguments()
   {
-    expectException(IAE.class, "Function[timestamp_shift] must have 3 to 4 arguments");
+    expectException(IAE.class, "Function[timestamp_shift] requires 3 to 4 arguments");
     apply(
         ImmutableList.of(
             ExprEval.of(timestamp.getMillis()).toExpr(),
@@ -78,7 +81,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
   @Test
   public void testMoreThanFourArguments()
   {
-    expectException(IAE.class, "Function[timestamp_shift] must have 3 to 4 arguments");
+    expectException(IAE.class, "Function[timestamp_shift] requires 3 to 4 arguments");
     apply(
         ImmutableList.of(
             ExprEval.of(timestamp.getMillis()).toExpr(),
@@ -102,7 +105,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
 
     Assert.assertEquals(
         timestamp.withPeriodAdded(Months.ONE, step).getMillis(),
-        expr.eval(ExprUtils.nilBindings()).asLong()
+        expr.eval(InputBindings.nilBindings()).asLong()
     );
   }
 
@@ -119,7 +122,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
 
     Assert.assertEquals(
         timestamp.withPeriodAdded(Months.ONE, step).getMillis(),
-        expr.eval(ExprUtils.nilBindings()).asLong()
+        expr.eval(InputBindings.nilBindings()).asLong()
     );
   }
 
@@ -136,7 +139,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
 
     Assert.assertEquals(
         timestamp.withPeriodAdded(Months.ONE, step).getMillis(),
-        expr.eval(ExprUtils.nilBindings()).asLong()
+        expr.eval(InputBindings.nilBindings()).asLong()
     );
   }
 
@@ -152,7 +155,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
 
     Assert.assertEquals(
         timestamp.withPeriodAdded(Minutes.ONE, 1).getMillis(),
-        expr.eval(ExprUtils.nilBindings()).asLong()
+        expr.eval(InputBindings.nilBindings()).asLong()
     );
   }
 
@@ -168,7 +171,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
 
     Assert.assertEquals(
         timestamp.withPeriodAdded(Days.ONE, 1).getMillis(),
-        expr.eval(ExprUtils.nilBindings()).asLong()
+        expr.eval(InputBindings.nilBindings()).asLong()
     );
   }
 
@@ -185,7 +188,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
 
     Assert.assertEquals(
         timestamp.toDateTime(DateTimes.inferTzFromString("America/Los_Angeles")).withPeriodAdded(Years.ONE, 1).getMillis(),
-        expr.eval(ExprUtils.nilBindings()).asLong()
+        expr.eval(InputBindings.nilBindings()).asLong()
     );
   }
 
@@ -197,7 +200,7 @@ public class TimestampShiftMacroTest extends MacroTestBase
         ImmutableList.of(
             ExprEval.of(timestamp.getMillis()).toExpr(),
             ExprEval.of("P1Y").toExpr(),
-            new NotLiteralExpr("step"),
+            Parser.parse("\"step\"", ExprMacroTable.nil()), // "step" is not a literal
             ExprEval.of("America/Los_Angeles").toExpr()
         ));
 
@@ -206,6 +209,13 @@ public class TimestampShiftMacroTest extends MacroTestBase
         timestamp.toDateTime(DateTimes.inferTzFromString("America/Los_Angeles")).withPeriodAdded(Years.ONE, step).getMillis(),
         expr.eval(new Expr.ObjectBinding()
         {
+          @Nullable
+          @Override
+          public ExpressionType getType(String name)
+          {
+            return null;
+          }
+
           @Nullable
           @Override
           public Object get(String name)
@@ -232,29 +242,9 @@ public class TimestampShiftMacroTest extends MacroTestBase
     );
 
     if (NullHandling.replaceWithDefault()) {
-      Assert.assertEquals(2678400000L, expr.eval(ExprUtils.nilBindings()).value());
+      Assert.assertEquals(2678400000L, expr.eval(InputBindings.nilBindings()).value());
     } else {
-      Assert.assertNull(expr.eval(ExprUtils.nilBindings()).value());
-    }
-  }
-
-  private static class NotLiteralExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
-  {
-    NotLiteralExpr(String name)
-    {
-      super(name, ExprEval.of(name).toExpr());
-    }
-
-    @Override
-    public ExprEval eval(ObjectBinding bindings)
-    {
-      return ExprEval.bestEffortOf(bindings.get(name));
-    }
-
-    @Override
-    public Expr visit(Shuttle shuttle)
-    {
-      return null;
+      Assert.assertNull(expr.eval(InputBindings.nilBindings()).value());
     }
   }
 }

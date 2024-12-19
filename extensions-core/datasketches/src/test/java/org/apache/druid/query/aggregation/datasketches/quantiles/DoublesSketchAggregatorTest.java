@@ -49,7 +49,7 @@ import java.util.List;
 @RunWith(Parameterized.class)
 public class DoublesSketchAggregatorTest extends InitializedNullHandlingTest
 {
-
+  private final GroupByQueryConfig config;
   private final AggregationTestHelper helper;
   private final AggregationTestHelper timeSeriesHelper;
 
@@ -58,6 +58,7 @@ public class DoublesSketchAggregatorTest extends InitializedNullHandlingTest
 
   public DoublesSketchAggregatorTest(final GroupByQueryConfig config, final String vectorize)
   {
+    this.config = config;
     DoublesSketchModule.registerSerde();
     DoublesSketchModule module = new DoublesSketchModule();
     helper = AggregationTestHelper.createGroupByQueryAggregationTestHelper(
@@ -533,5 +534,52 @@ public class DoublesSketchAggregatorTest extends InitializedNullHandlingTest
     );
     List<ResultRow> results = seq.toList();
     Assert.assertEquals(1, results.size());
+  }
+
+  @Test
+  public void testSuccessWhenMaxStreamLengthHit() throws Exception
+  {
+    Sequence<ResultRow> seq = helper.createIndexAndRunQueryOnSegment(
+        new File(this.getClass().getClassLoader().getResource("quantiles/doubles_build_data.tsv").getFile()),
+        String.join(
+            "\n",
+            "{",
+            "  \"type\": \"string\",",
+            "  \"parseSpec\": {",
+            "    \"format\": \"tsv\",",
+            "    \"timestampSpec\": {\"column\": \"timestamp\", \"format\": \"yyyyMMddHH\"},",
+            "    \"dimensionsSpec\": {",
+            "      \"dimensions\": [\"sequenceNumber\", \"product\"],",
+            "      \"dimensionExclusions\": [],",
+            "      \"spatialDimensions\": []",
+            "    },",
+            "    \"columns\": [\"timestamp\", \"sequenceNumber\", \"product\", \"value\"]",
+            "  }",
+            "}"
+        ),
+        "[{\"type\": \"doubleSum\", \"name\": \"value\", \"fieldName\": \"value\"}]",
+        0, // minTimestamp
+        Granularities.NONE,
+        10, // maxRowCount
+        String.join(
+            "\n",
+            "{",
+            "  \"queryType\": \"groupBy\",",
+            "  \"dataSource\": \"test_datasource\",",
+            "  \"granularity\": \"ALL\",",
+            "  \"dimensions\": [],",
+            "  \"aggregations\": [",
+            "    {\"type\": \"quantilesDoublesSketch\", \"name\": \"sketch\", \"fieldName\": \"value\", \"k\": 128, \"maxStreamLength\": 10}",
+            "  ],",
+            "  \"postAggregations\": [",
+            "    {\"type\": \"quantilesDoublesSketchToQuantile\", \"name\": \"quantile\", \"fraction\": 0.5, \"field\": {\"type\": \"fieldAccess\", \"fieldName\": \"sketch\"}},",
+            "    {\"type\": \"quantilesDoublesSketchToQuantiles\", \"name\": \"quantiles\", \"fractions\": [0, 0.5, 1], \"field\": {\"type\": \"fieldAccess\", \"fieldName\": \"sketch\"}},",
+            "    {\"type\": \"quantilesDoublesSketchToHistogram\", \"name\": \"histogram\", \"splitPoints\": [0.25, 0.5, 0.75], \"field\": {\"type\": \"fieldAccess\", \"fieldName\": \"sketch\"}}",
+            "  ],",
+            "  \"intervals\": [\"2016-01-01T00:00:00.000Z/2016-01-31T00:00:00.000Z\"]",
+            "}"
+        )
+    );
+    seq.toList();
   }
 }

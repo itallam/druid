@@ -36,15 +36,15 @@ import org.apache.druid.query.TableDataSource;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.aggregation.SerializablePairLongString;
-import org.apache.druid.query.aggregation.last.StringLastAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.last.StringLastAggregatorFactory;
 import org.apache.druid.query.aggregation.post.ArithmeticPostAggregator;
 import org.apache.druid.query.aggregation.post.ConstantPostAggregator;
 import org.apache.druid.query.aggregation.post.FieldAccessPostAggregator;
 import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.segment.TestHelper;
 import org.apache.druid.segment.VirtualColumns;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.segment.column.ValueType;
 import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -93,11 +93,11 @@ public class TimeseriesQueryQueryToolChestTest
                 ImmutableList.of(
                     new CountAggregatorFactory("metric1"),
                     new LongSumAggregatorFactory("metric0", "metric0"),
-                    new StringLastAggregatorFactory("complexMetric", "test", null)
+                    new StringLastAggregatorFactory("complexMetric", "test", null, null)
                 ),
                 ImmutableList.of(new ConstantPostAggregator("post", 10)),
                 0,
-                null
+                ImmutableMap.of(TimeseriesQuery.CTX_TIMESTAMP_RESULT_FIELD, "ts_field")
             )
         );
 
@@ -106,6 +106,7 @@ public class TimeseriesQueryQueryToolChestTest
         DateTimes.utc(123L),
         new TimeseriesResultValue(
             ImmutableMap.of(
+                "ts_field", 123L,
                 "metric1", 2,
                 "metric0", 3,
                 "complexMetric", new SerializablePairLongString(123L, "val1")
@@ -130,6 +131,7 @@ public class TimeseriesQueryQueryToolChestTest
         DateTimes.utc(123L),
         new TimeseriesResultValue(
             ImmutableMap.of(
+                "ts_field", 123L,
                 "metric1", 2,
                 "metric0", 3,
                 "complexMetric", "val1",
@@ -380,10 +382,10 @@ public class TimeseriesQueryQueryToolChestTest
     Assert.assertEquals(
         RowSignature.builder()
                     .addTimeColumn()
-                    .add("rows", ValueType.LONG)
-                    .add("index", ValueType.DOUBLE)
+                    .add("rows", ColumnType.LONG)
+                    .add("index", ColumnType.DOUBLE)
                     .add("uniques", null)
-                    .add("const", ValueType.LONG)
+                    .add("const", ColumnType.LONG)
                     .build(),
         TOOL_CHEST.resultArraySignature(query)
     );
@@ -406,11 +408,11 @@ public class TimeseriesQueryQueryToolChestTest
     Assert.assertEquals(
         RowSignature.builder()
                     .addTimeColumn()
-                    .add(TIMESTAMP_RESULT_FIELD_NAME, ValueType.LONG)
-                    .add("rows", ValueType.LONG)
-                    .add("index", ValueType.DOUBLE)
+                    .add(TIMESTAMP_RESULT_FIELD_NAME, ColumnType.LONG)
+                    .add("rows", ColumnType.LONG)
+                    .add("index", ColumnType.DOUBLE)
                     .add("uniques", null)
-                    .add("const", ValueType.LONG)
+                    .add("const", ColumnType.LONG)
                     .build(),
         TOOL_CHEST.resultArraySignature(query)
     );

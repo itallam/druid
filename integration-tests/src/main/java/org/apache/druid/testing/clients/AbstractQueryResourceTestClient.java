@@ -26,6 +26,7 @@ import com.google.inject.Inject;
 import org.apache.druid.guice.annotations.Smile;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.java.util.http.client.HttpClient;
 import org.apache.druid.java.util.http.client.Request;
 import org.apache.druid.java.util.http.client.response.BytesFullResponseHandler;
@@ -33,12 +34,16 @@ import org.apache.druid.java.util.http.client.response.BytesFullResponseHolder;
 import org.apache.druid.java.util.http.client.response.StatusResponseHandler;
 import org.apache.druid.java.util.http.client.response.StatusResponseHolder;
 import org.apache.druid.testing.guice.TestClient;
+import org.apache.druid.testing.utils.ITRetryUtil;
+import org.apache.druid.utils.Throwables;
+import org.jboss.netty.channel.ChannelException;
 import org.jboss.netty.handler.codec.http.HttpHeaders;
 import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.annotation.Nullable;
 import javax.ws.rs.core.MediaType;
+
 import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -46,9 +51,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public abstract class AbstractQueryResourceTestClient<QueryType>
 {
+  private static final Logger LOG = new Logger(AbstractQueryResourceTestClient.class);
+
   final String contentTypeHeader;
 
   /**
@@ -90,9 +99,7 @@ public abstract class AbstractQueryResourceTestClient<QueryType>
     @Override
     public List<Map<String, Object>> decode(byte[] content) throws IOException
     {
-      return om.readValue(content, new TypeReference<List<Map<String, Object>>>()
-      {
-      });
+      return om.readValue(content, new TypeReference<>() {});
     }
   }
 
@@ -132,8 +139,6 @@ public abstract class AbstractQueryResourceTestClient<QueryType>
     this.acceptHeader = acceptHeader;
   }
 
-  public abstract String getBrokerURL();
-
   public List<Map<String, Object>> query(String url, QueryType query)
   {
     try {
@@ -146,15 +151,35 @@ public abstract class AbstractQueryResourceTestClient<QueryType>
         request.addHeader(HttpHeaders.Names.ACCEPT, this.acceptHeader);
       }
 
-      BytesFullResponseHolder response = httpClient.go(
-          request,
-          new BytesFullResponseHandler()
-      ).get();
+      final AtomicReference<BytesFullResponseHolder> responseRef = new AtomicReference<>();
+
+      ITRetryUtil.retryUntil(() -> {
+        try {
+          responseRef.set(httpClient.go(
+              request,
+              new BytesFullResponseHandler()
+          ).get());
+        }
+        catch (Throwable t) {
+          ChannelException ce = Throwables.getCauseOfType(t, ChannelException.class);
+          if (ce != null) {
+            LOG.info(ce, "Encountered a channel exception. Retrying the query request");
+            return false;
+          }
+        }
+        return true;
+      },
+          true,
+          1000,
+          3,
+          "waiting for queries to complete");
+
+      BytesFullResponseHolder response = responseRef.get();
 
       if (!response.getStatus().equals(HttpResponseStatus.OK)) {
         throw new ISE(
             "Error while querying[%s] status[%s] content[%s]",
-            getBrokerURL(),
+            url,
             response.getStatus(),
             new String(response.getContent(), StandardCharsets.UTF_8)
         );
@@ -178,13 +203,35 @@ public abstract class AbstractQueryResourceTestClient<QueryType>
 
   public Future<StatusResponseHolder> queryAsync(String url, QueryType query)
   {
+    return queryAsync(url, query, null, null);
+  }
+
+  public Future<StatusResponseHolder> queryAsync(String url, QueryType query, String username, String password)
+  {
     try {
       Request request = new Request(HttpMethod.POST, new URL(url));
       request.setContent(MediaType.APPLICATION_JSON, encoderDecoderMap.get(MediaType.APPLICATION_JSON).encode(query));
+      request.setBasicAuthentication(username, password);
       return httpClient.go(
           request,
           StatusResponseHandler.getInstance()
       );
+    }
+    catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  public HttpResponseStatus cancelQuery(String url, long timeoutMs)
+  {
+    try {
+      Request request = new Request(HttpMethod.DELETE, new URL(url));
+      Future<StatusResponseHolder> future = httpClient.go(
+          request,
+          StatusResponseHandler.getInstance()
+      );
+      StatusResponseHolder responseHolder = future.get(timeoutMs, TimeUnit.MILLISECONDS);
+      return responseHolder.getStatus();
     }
     catch (Exception e) {
       throw new RuntimeException(e);

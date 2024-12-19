@@ -22,17 +22,20 @@ package org.apache.druid.query;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializerProvider;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableMap;
 import org.apache.druid.client.CacheUtil;
 import org.apache.druid.client.cache.Cache;
+import org.apache.druid.client.cache.Cache.NamedKey;
 import org.apache.druid.client.cache.CacheConfig;
 import org.apache.druid.java.util.common.RE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.SequenceWrapper;
 import org.apache.druid.java.util.common.guava.Sequences;
+import org.apache.druid.java.util.common.jackson.JacksonUtils;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.query.context.ResponseContext;
 import org.apache.druid.server.QueryResource;
@@ -70,7 +73,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
     this.cache = cache;
     this.cacheConfig = cacheConfig;
     this.query = query;
-    this.strategy = queryToolChest.getCacheStrategy(query);
+    this.strategy = queryToolChest.getCacheStrategy(query, objectMapper);
     this.populateResultCache = CacheUtil.isPopulateResultCache(
         query,
         strategy,
@@ -85,8 +88,9 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
   {
     if (useResultCache || populateResultCache) {
 
-      final String cacheKeyStr = StringUtils.fromUtf8(strategy.computeResultLevelCacheKey(query));
-      final byte[] cachedResultSet = fetchResultsFromResultLevelCache(cacheKeyStr);
+      final byte[] queryCacheKey = strategy.computeResultLevelCacheKey(query);
+      final Cache.NamedKey cacheKey = CacheUtil.computeResultLevelCacheKey(queryCacheKey);
+      final byte[] cachedResultSet = fetchResultsFromResultLevelCache(cacheKey);
       String existingResultSetId = extractEtagFromResults(cachedResultSet);
 
       existingResultSetId = existingResultSetId == null ? "" : existingResultSetId;
@@ -97,7 +101,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
           QueryPlus.wrap(query),
           responseContext
       );
-      String newResultSetId = (String) responseContext.get(ResponseContext.Key.ETAG);
+      String newResultSetId = responseContext.getEntityTag();
 
       if (useResultCache && newResultSetId != null && newResultSetId.equals(existingResultSetId)) {
         log.debug("Return cached result set as there is no change in identifiers for query %s ", query.getId());
@@ -105,7 +109,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
       } else {
         @Nullable
         ResultLevelCachePopulator resultLevelCachePopulator = createResultLevelCachePopulator(
-            cacheKeyStr,
+            cacheKey,
             newResultSetId
         );
         if (resultLevelCachePopulator == null) {
@@ -116,7 +120,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
         return Sequences.wrap(
             Sequences.map(
                 resultFromClient,
-                new Function<T, T>()
+                new Function<>()
                 {
                   @Override
                   public T apply(T input)
@@ -164,11 +168,11 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
 
   @Nullable
   private byte[] fetchResultsFromResultLevelCache(
-      final String queryCacheKey
+      final NamedKey cacheKey
   )
   {
-    if (useResultCache && queryCacheKey != null) {
-      return cache.get(CacheUtil.computeResultLevelCacheKey(queryCacheKey));
+    if (useResultCache && cacheKey != null) {
+      return cache.get(cacheKey);
     }
     return null;
   }
@@ -214,7 +218,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
   }
 
   private ResultLevelCachePopulator createResultLevelCachePopulator(
-      String cacheKeyStr,
+      NamedKey cacheKey,
       String resultSetId
   )
   {
@@ -222,7 +226,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
       ResultLevelCachePopulator resultLevelCachePopulator = new ResultLevelCachePopulator(
           cache,
           objectMapper,
-          CacheUtil.computeResultLevelCacheKey(cacheKeyStr),
+          cacheKey,
           cacheConfig,
           true
       );
@@ -247,6 +251,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
   {
     private final Cache cache;
     private final ObjectMapper mapper;
+    private final SerializerProvider serialiers;
     private final Cache.NamedKey key;
     private final CacheConfig cacheConfig;
     @Nullable
@@ -262,6 +267,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
     {
       this.cache = cache;
       this.mapper = mapper;
+      this.serialiers = mapper.getSerializerProviderInstance();
       this.key = key;
       this.cacheConfig = cacheConfig;
       this.cacheObjectStream = shouldPopulate ? new ByteArrayOutputStream() : null;
@@ -285,7 +291,7 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
       Preconditions.checkNotNull(cacheObjectStream, "cacheObjectStream");
       int cacheLimit = cacheConfig.getResultLevelCacheLimit();
       try (JsonGenerator gen = mapper.getFactory().createGenerator(cacheObjectStream)) {
-        gen.writeObject(cacheFn.apply(resultEntry));
+        JacksonUtils.writeObjectUsingSerializerProvider(gen, serialiers, cacheFn.apply(resultEntry));
         if (cacheLimit > 0 && cacheObjectStream.size() > cacheLimit) {
           stopPopulating();
         }
@@ -298,11 +304,8 @@ public class ResultLevelCachingQueryRunner<T> implements QueryRunner<T>
 
     public void populateResults()
     {
-      CacheUtil.populateResultCache(
-          cache,
-          key,
-          Preconditions.checkNotNull(cacheObjectStream, "cacheObjectStream").toByteArray()
-      );
+      byte[] cachedResults = Preconditions.checkNotNull(cacheObjectStream, "cacheObjectStream").toByteArray();
+      cache.put(key, cachedResults);
     }
   }
 }

@@ -19,19 +19,36 @@
 
 package org.apache.druid.indexing.common.task.batch.parallel;
 
+import com.google.common.collect.ImmutableMap;
 import org.apache.druid.indexer.partitions.HashedPartitionsSpec;
+import org.apache.druid.indexing.common.task.TuningConfigBuilder;
 import org.apache.druid.segment.TestHelper;
-import org.hamcrest.Matchers;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
+import java.util.Arrays;
 import java.util.Collections;
 
+@RunWith(Parameterized.class)
 public class PartialGenericSegmentMergeTaskTest extends AbstractParallelIndexSupervisorTaskTest
 {
+  @Parameterized.Parameters(name = "partitionLocation = {0}")
+  public static Iterable<?> data()
+  {
+    return Arrays.asList(
+        GENERIC_PARTITION_LOCATION,
+        DEEP_STORE_PARTITION_LOCATION
+    );
+  }
+
+  @Parameterized.Parameter
+  public PartitionLocation partitionLocation;
+
   private static final GenericPartitionLocation GENERIC_PARTITION_LOCATION = new GenericPartitionLocation(
       ParallelIndexTestingFactory.HOST,
       ParallelIndexTestingFactory.PORT,
@@ -40,26 +57,20 @@ public class PartialGenericSegmentMergeTaskTest extends AbstractParallelIndexSup
       ParallelIndexTestingFactory.INTERVAL,
       ParallelIndexTestingFactory.HASH_BASED_NUMBERED_SHARD_SPEC
   );
-  private static final PartialGenericSegmentMergeIOConfig IO_CONFIG =
-      new PartialGenericSegmentMergeIOConfig(Collections.singletonList(GENERIC_PARTITION_LOCATION));
-  private static final HashedPartitionsSpec PARTITIONS_SPEC = new HashedPartitionsSpec(
-      null,
-      1,
-      Collections.emptyList()
+
+  private static final DeepStoragePartitionLocation DEEP_STORE_PARTITION_LOCATION = new DeepStoragePartitionLocation(
+      ParallelIndexTestingFactory.SUBTASK_ID,
+      ParallelIndexTestingFactory.INTERVAL,
+      ParallelIndexTestingFactory.HASH_BASED_NUMBERED_SHARD_SPEC,
+      ImmutableMap.of()
   );
-  private static final PartialGenericSegmentMergeIngestionSpec INGESTION_SPEC =
-      new PartialGenericSegmentMergeIngestionSpec(
-          ParallelIndexTestingFactory.createDataSchema(ParallelIndexTestingFactory.INPUT_INTERVALS),
-          IO_CONFIG,
-          new ParallelIndexTestingFactory.TuningConfigBuilder()
-              .partitionsSpec(PARTITIONS_SPEC)
-              .build()
-      );
 
   @Rule
   public ExpectedException exception = ExpectedException.none();
 
   private PartialGenericSegmentMergeTask target;
+  private PartialSegmentMergeIOConfig ioConfig;
+  private HashedPartitionsSpec partitionsSpec;
 
   public PartialGenericSegmentMergeTaskTest()
   {
@@ -70,6 +81,20 @@ public class PartialGenericSegmentMergeTaskTest extends AbstractParallelIndexSup
   @Before
   public void setup()
   {
+    ioConfig = new PartialSegmentMergeIOConfig(Collections.singletonList(partitionLocation));
+    partitionsSpec = new HashedPartitionsSpec(
+        null,
+        1,
+        Collections.emptyList()
+    );
+    PartialSegmentMergeIngestionSpec ingestionSpec = new PartialSegmentMergeIngestionSpec(
+        ParallelIndexTestingFactory.createDataSchema(ParallelIndexTestingFactory.INPUT_INTERVALS),
+        ioConfig,
+        TuningConfigBuilder.forParallelIndexTask()
+                           .withForceGuaranteedRollup(true)
+                           .withPartitionsSpec(partitionsSpec)
+                           .build()
+    );
     target = new PartialGenericSegmentMergeTask(
         ParallelIndexTestingFactory.AUTOMATIC_ID,
         ParallelIndexTestingFactory.GROUP_ID,
@@ -77,7 +102,7 @@ public class PartialGenericSegmentMergeTaskTest extends AbstractParallelIndexSup
         ParallelIndexTestingFactory.SUPERVISOR_TASK_ID,
         ParallelIndexTestingFactory.SUBTASK_SPEC_ID,
         ParallelIndexTestingFactory.NUM_ATTEMPTS,
-        INGESTION_SPEC,
+        ingestionSpec,
         ParallelIndexTestingFactory.CONTEXT
     );
   }
@@ -92,7 +117,7 @@ public class PartialGenericSegmentMergeTaskTest extends AbstractParallelIndexSup
   public void hasCorrectPrefixForAutomaticId()
   {
     String id = target.getId();
-    Assert.assertThat(id, Matchers.startsWith(PartialGenericSegmentMergeTask.TYPE));
+    Assert.assertTrue(id.startsWith(PartialGenericSegmentMergeTask.TYPE));
   }
 
   @Test
@@ -108,14 +133,21 @@ public class PartialGenericSegmentMergeTaskTest extends AbstractParallelIndexSup
         ParallelIndexTestingFactory.SUPERVISOR_TASK_ID,
         ParallelIndexTestingFactory.SUBTASK_SPEC_ID,
         ParallelIndexTestingFactory.NUM_ATTEMPTS,
-        new PartialGenericSegmentMergeIngestionSpec(
+        new PartialSegmentMergeIngestionSpec(
             ParallelIndexTestingFactory.createDataSchema(null),
-            IO_CONFIG,
-            new ParallelIndexTestingFactory.TuningConfigBuilder()
-                .partitionsSpec(PARTITIONS_SPEC)
+            ioConfig,
+            TuningConfigBuilder.forParallelIndexTask()
+                .withForceGuaranteedRollup(true)
+                .withPartitionsSpec(partitionsSpec)
                 .build()
         ),
         ParallelIndexTestingFactory.CONTEXT
     );
+  }
+
+  @Test
+  public void testGetInputSourceResources()
+  {
+    Assert.assertTrue(target.getInputSourceResources().isEmpty());
   }
 }

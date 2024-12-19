@@ -33,6 +33,7 @@ import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.FileUtils;
 import org.apache.druid.java.util.common.granularity.Granularities;
 import org.apache.druid.java.util.common.guava.Sequence;
+import org.apache.druid.math.expr.ExpressionProcessing;
 import org.apache.druid.query.aggregation.AggregationTestHelper;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
@@ -48,7 +49,6 @@ import org.apache.druid.query.groupby.GroupByQueryRunnerTestHelper;
 import org.apache.druid.query.groupby.ResultRow;
 import org.apache.druid.query.groupby.orderby.DefaultLimitSpec;
 import org.apache.druid.query.groupby.orderby.OrderByColumnSpec;
-import org.apache.druid.query.groupby.strategy.GroupByStrategySelector;
 import org.apache.druid.query.spec.LegacySegmentSpec;
 import org.apache.druid.query.topn.TopNQuery;
 import org.apache.druid.query.topn.TopNQueryBuilder;
@@ -61,7 +61,7 @@ import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.QueryableIndexSegment;
 import org.apache.druid.segment.TestHelper;
-import org.apache.druid.segment.column.ValueType;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.incremental.IncrementalIndex;
 import org.apache.druid.segment.incremental.OnheapIncrementalIndex;
 import org.apache.druid.segment.virtual.ExpressionVirtualColumn;
@@ -85,6 +85,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -133,9 +134,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
     this.config = config;
     this.segmentWriteOutMediumFactory = segmentWriteOutMediumFactory;
 
-    this.context = config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)
-                   ? ImmutableMap.of()
-                   : ImmutableMap.of("forceHashAggregation", forceHashAggregation);
+    this.context = ImmutableMap.of("forceHashAggregation", forceHashAggregation);
   }
 
   @Before
@@ -149,7 +148,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
     StringInputRowParser parser = new StringInputRowParser(
         new CSVParseSpec(
             new TimestampSpec("timestamp", "iso", null),
-            new DimensionsSpec(DimensionsSpec.getDefaultSchemas(ImmutableList.of("product", "tags", "othertags")), null, null),
+            new DimensionsSpec(DimensionsSpec.getDefaultSchemas(ImmutableList.of("product", "tags", "othertags"))),
             "\t",
             ImmutableList.of("timestamp", "product", "tags", "othertags"),
             false,
@@ -172,14 +171,14 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
 
     persistedSegmentDir = FileUtils.createTempDir();
     TestHelper.getTestIndexMergerV9(segmentWriteOutMediumFactory)
-              .persist(incrementalIndex, persistedSegmentDir, new IndexSpec(), null);
+              .persist(incrementalIndex, persistedSegmentDir, IndexSpec.DEFAULT, null);
     queryableIndex = TestHelper.getTestIndexIO().loadIndex(persistedSegmentDir);
 
 
     StringInputRowParser parserNullSampler = new StringInputRowParser(
         new JSONParseSpec(
             new TimestampSpec("time", "iso", null),
-            new DimensionsSpec(DimensionsSpec.getDefaultSchemas(ImmutableList.of("product", "tags", "othertags")), null, null)
+            new DimensionsSpec(DimensionsSpec.getDefaultSchemas(ImmutableList.of("product", "tags", "othertags")))
         ),
         "UTF-8"
     );
@@ -205,7 +204,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
     }
     persistedSegmentDirNullSampler = FileUtils.createTempDir();
     TestHelper.getTestIndexMergerV9(segmentWriteOutMediumFactory)
-              .persist(incrementalIndexNullSampler, persistedSegmentDirNullSampler, new IndexSpec(), null);
+              .persist(incrementalIndexNullSampler, persistedSegmentDirNullSampler, IndexSpec.DEFAULT, null);
 
     queryableIndexNullSampler = TestHelper.getTestIndexIO().loadIndex(persistedSegmentDirNullSampler);
   }
@@ -395,10 +394,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpression()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -409,7 +404,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "map(x -> concat(x, 'foo'), tags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -426,7 +421,14 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
     );
 
     List<ResultRow> expectedResults = Arrays.asList(
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "foo", "count", 2L),
+        GroupByQueryRunnerTestHelper.createExpectedRow(
+            query,
+            "1970",
+            "texpr",
+            NullHandling.sqlCompatible() ? "foo" : null,
+            "count",
+            2L
+        ),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1foo", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2foo", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t3foo", "count", 4L),
@@ -442,10 +444,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionMultiMulti()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -456,7 +454,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "cartesian_map((x,y) -> concat(x, y), tags, othertags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -473,24 +471,77 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
         query
     );
 
-    List<ResultRow> expectedResults = Arrays.asList(
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u1", "count", 2L),
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u2", "count", 2L),
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u1", "count", 2L),
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u2", "count", 2L),
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t3u1", "count", 2L)
-    );
+    List<ResultRow>
+        expectedResults =
+        NullHandling.sqlCompatible() ?
+        Arrays.asList(
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u1", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u2", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u1", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u2", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t3u1", "count", 2L)
+        ) :
+        Arrays.asList(
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", null, "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u1", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u2", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u1", "count", 2L),
+            GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u2", "count", 2L)
+        );
 
     TestHelper.assertExpectedObjects(expectedResults, result.toList(), "expr-multi-multi");
   }
 
   @Test
+  public void testGroupByExpressionMultiMultiBackwardsCompat0dot22andOlder()
+  {
+    try {
+      ExpressionProcessing.initializeForHomogenizeNullMultiValueStrings();
+      GroupByQuery query = GroupByQuery
+          .builder()
+          .setDataSource("xx")
+          .setQuerySegmentSpec(new LegacySegmentSpec("1970/3000"))
+          .setGranularity(Granularities.ALL)
+          .setDimensions(new DefaultDimensionSpec("texpr", "texpr"))
+          .setVirtualColumns(
+              new ExpressionVirtualColumn(
+                  "texpr",
+                  "cartesian_map((x,y) -> concat(x, y), tags, othertags)",
+                  ColumnType.STRING,
+                  TestExprMacroTable.INSTANCE
+              )
+          )
+          .setLimit(5)
+          .setAggregatorSpecs(new CountAggregatorFactory("count"))
+          .setContext(context)
+          .build();
+
+      Sequence<ResultRow> result = helper.runQueryOnSegmentsObjs(
+          ImmutableList.of(
+              new QueryableIndexSegment(queryableIndex, SegmentId.dummy("sid1")),
+              new IncrementalIndexSegment(incrementalIndex, SegmentId.dummy("sid2"))
+          ),
+          query
+      );
+
+      List<ResultRow> expectedResults = Arrays.asList(
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u1", "count", 2L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t1u2", "count", 2L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u1", "count", 2L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t2u2", "count", 2L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "texpr", "t3u1", "count", 2L)
+      );
+
+      TestHelper.assertExpectedObjects(expectedResults, result.toList(), "expr-multi-multi");
+    }
+    finally {
+      ExpressionProcessing.initializeForTests();
+    }
+  }
+
+  @Test
   public void testGroupByExpressionMultiMultiAuto()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -501,7 +552,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "map((x) -> concat(x, othertags), tags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -532,10 +583,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionMultiMultiAutoAuto()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -546,7 +593,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "concat(tags, othertags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -587,7 +634,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "concat(tags, tags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -625,10 +672,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionMultiMultiAutoAutoWithFilter()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -639,7 +682,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "concat(tags, othertags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -683,7 +726,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "tt",
                 "concat(tags, 'foo')",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -716,21 +759,17 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionArrayExpressionFilter()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 only supports dimensions with an outputType of STRING.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
         .setQuerySegmentSpec(new LegacySegmentSpec("1970/3000"))
         .setGranularity(Granularities.ALL)
-        .setDimensions(new DefaultDimensionSpec("tt", "tt", ValueType.LONG))
+        .setDimensions(new DefaultDimensionSpec("tt", "tt", ColumnType.LONG))
         .setVirtualColumns(
             new ExpressionVirtualColumn(
                 "tt",
                 "array_offset_of(tags, 't2')",
-                ValueType.LONG,
+                ColumnType.LONG,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -746,10 +785,19 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
         query
     );
 
-    List<ResultRow> expectedResults = Arrays.asList(
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", NullHandling.replaceWithDefault() ? -1L : null, "count", 6L),
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", 1L, "count", 2L)
-    );
+    List<ResultRow> expectedResults;
+    if (NullHandling.replaceWithDefault()) {
+      expectedResults = Arrays.asList(
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", -1L, "count", 4L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", 0L, "count", 2L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", 1L, "count", 2L)
+      );
+    } else {
+      expectedResults = Arrays.asList(
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", null, "count", 6L),
+          GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", 1L, "count", 2L)
+      );
+    }
 
     TestHelper.assertExpectedObjects(expectedResults, result.toList(), "expr-auto");
   }
@@ -757,10 +805,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionArrayFnArg()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -771,7 +815,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "tt",
                 "array_to_string(map(tags -> concat('foo', tags), tags), ', ')",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -788,7 +832,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
     );
 
     List<ResultRow> expectedResults = Arrays.asList(
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foo", "count", 2L),
+        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", NullHandling.replaceWithDefault() ? null : "foo", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foot1, foot2, foot3", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foot3, foot4, foot5", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foot5, foot6, foot7", "count", 2L)
@@ -800,10 +844,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionAutoArrayFnArg()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -814,7 +854,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "tt",
                 "array_to_string(concat('foo', tags), ', ')",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -843,10 +883,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionFoldArrayToString()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -857,7 +893,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "tt",
                 "fold((tag, acc) -> concat(acc, tag), tags, '')",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -894,10 +930,6 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   @Test
   public void testGroupByExpressionFoldArrayToStringWithConcats()
   {
-    if (config.getDefaultStrategy().equals(GroupByStrategySelector.STRATEGY_V1)) {
-      expectedException.expect(RuntimeException.class);
-      expectedException.expectMessage("GroupBy v1 does not support dimension selectors with unknown cardinality.");
-    }
     GroupByQuery query = GroupByQuery
         .builder()
         .setDataSource("xx")
@@ -907,8 +939,8 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
         .setVirtualColumns(
             new ExpressionVirtualColumn(
                 "tt",
-                "fold((tag, acc) -> concat(concat(acc, case_searched(acc == '', '', ', '), concat('foo', tag)))), tags, '')",
-                ValueType.STRING,
+                "fold((tag, acc) -> concat(concat(acc, case_searched(acc == '', '', ', '), concat('foo', tag))), tags, '')",
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -925,7 +957,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
     );
 
     List<ResultRow> expectedResults = Arrays.asList(
-        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foo", "count", 2L),
+        GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", NullHandling.replaceWithDefault() ? null : "foo", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foot1, foot2, foot3", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foot3, foot4, foot5", "count", 2L),
         GroupByQueryRunnerTestHelper.createExpectedRow(query, "1970", "tt", "foot5, foot6, foot7", "count", 2L)
@@ -940,7 +972,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
   {
     expectedException.expect(RuntimeException.class);
     expectedException.expectMessage(
-        "Invalid expression: (concat [(map ([x] -> (concat [x, othertags])), [tags]), tags]); [tags] used as both scalar and array variables"
+        "Invalid expression: (concat [(cartesian_map ([x, othertags] -> (concat [x, othertags])), [tags, othertags]), tags]); [tags] used as both scalar and array variables"
     );
     GroupByQuery query = GroupByQuery
         .builder()
@@ -952,7 +984,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "concat(map((x) -> concat(x, othertags), tags), tags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -987,7 +1019,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "array_concat(tags, (array_append(othertags, tags)))",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -1036,9 +1068,9 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
       );
       Sequence<Result<TopNResultValue>> result = runner.run(QueryPlus.wrap(query));
       List<Result<TopNResultValue>> expectedResults = Collections.singletonList(
-          new Result<TopNResultValue>(
+          new Result<>(
               DateTimes.of("2011-01-12T00:00:00.000Z"),
-              new TopNResultValue(
+              TopNResultValue.create(
                   Collections.<Map<String, Object>>singletonList(
                       ImmutableMap.of(
                           "tags", "t3",
@@ -1063,7 +1095,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "map(x -> concat(x, 'foo'), tags)",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -1085,11 +1117,16 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
           null
       );
       Sequence<Result<TopNResultValue>> result = runner.run(QueryPlus.wrap(query));
+
+      final Map<String, Object> thirdMap = new HashMap<>();
+      thirdMap.put("texpr", NullHandling.sqlCompatible() ? "foo" : null);
+      thirdMap.put("count", 1L);
+
       List<Map<String, Object>> expected =
           ImmutableList.<Map<String, Object>>builder()
                        .add(ImmutableMap.of("texpr", "t3foo", "count", 2L))
                        .add(ImmutableMap.of("texpr", "t5foo", "count", 2L))
-                       .add(ImmutableMap.of("texpr", "foo", "count", 1L))
+                       .add(thirdMap)
                        .add(ImmutableMap.of("texpr", "t1foo", "count", 1L))
                        .add(ImmutableMap.of("texpr", "t2foo", "count", 1L))
                        .add(ImmutableMap.of("texpr", "t4foo", "count", 1L))
@@ -1098,9 +1135,9 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
                        .build();
 
       List<Result<TopNResultValue>> expectedResults = Collections.singletonList(
-          new Result<TopNResultValue>(
+          new Result<>(
               DateTimes.of("2011-01-12T00:00:00.000Z"),
-              new TopNResultValue(
+              TopNResultValue.create(
                   expected
               )
           )
@@ -1120,7 +1157,7 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
             new ExpressionVirtualColumn(
                 "texpr",
                 "concat(tags, 'foo')",
-                ValueType.STRING,
+                ColumnType.STRING,
                 TestExprMacroTable.INSTANCE
             )
         )
@@ -1156,9 +1193,9 @@ public class MultiValuedDimensionTest extends InitializedNullHandlingTest
               .build();
 
       List<Result<TopNResultValue>> expectedResults = Collections.singletonList(
-          new Result<TopNResultValue>(
+          new Result<>(
               DateTimes.of("2011-01-12T00:00:00.000Z"),
-              new TopNResultValue(
+              TopNResultValue.create(
                   expected
               )
           )

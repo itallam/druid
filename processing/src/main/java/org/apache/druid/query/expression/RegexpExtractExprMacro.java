@@ -20,12 +20,11 @@
 package org.apache.druid.query.expression;
 
 import org.apache.druid.common.config.NullHandling;
-import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.math.expr.Expr;
 import org.apache.druid.math.expr.ExprEval;
 import org.apache.druid.math.expr.ExprMacroTable;
-import org.apache.druid.math.expr.ExprType;
+import org.apache.druid.math.expr.ExpressionType;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -46,20 +45,18 @@ public class RegexpExtractExprMacro implements ExprMacroTable.ExprMacro
   @Override
   public Expr apply(final List<Expr> args)
   {
-    if (args.size() < 2 || args.size() > 3) {
-      throw new IAE("Function[%s] must have 2 to 3 arguments", name());
-    }
+    validationHelperCheckAnyOfArgumentCount(args, 2, 3);
 
     final Expr arg = args.get(0);
     final Expr patternExpr = args.get(1);
     final Expr indexExpr = args.size() > 2 ? args.get(2) : null;
 
     if (!ExprUtils.isStringLiteral(patternExpr)) {
-      throw new IAE("Function[%s] pattern must be a string literal", name());
+      throw validationFailed("pattern must be a string literal");
     }
 
     if (indexExpr != null && (!indexExpr.isLiteral() || !(indexExpr.getLiteralValue() instanceof Number))) {
-      throw new IAE("Function[%s] index must be a numeric literal", name());
+      throw validationFailed("index must be a numeric literal");
     }
 
     // Precompile the pattern.
@@ -69,11 +66,11 @@ public class RegexpExtractExprMacro implements ExprMacroTable.ExprMacro
 
     final int index = indexExpr == null ? 0 : ((Number) indexExpr.getLiteralValue()).intValue();
 
-    class RegexpExtractExpr extends ExprMacroTable.BaseScalarUnivariateMacroFunctionExpr
+    class RegexpExtractExpr extends ExprMacroTable.BaseScalarMacroFunctionExpr
     {
-      private RegexpExtractExpr(Expr arg)
+      private RegexpExtractExpr(List<Expr> args)
       {
-        super(FN_NAME, arg);
+        super(RegexpExtractExprMacro.this, args);
       }
 
       @Nonnull
@@ -92,35 +89,13 @@ public class RegexpExtractExprMacro implements ExprMacroTable.ExprMacro
         }
       }
 
-      @Override
-      public Expr visit(Shuttle shuttle)
-      {
-        Expr newArg = arg.visit(shuttle);
-        return shuttle.visit(new RegexpExtractExpr(newArg));
-      }
-
       @Nullable
       @Override
-      public ExprType getOutputType(InputBindingInspector inspector)
+      public ExpressionType getOutputType(InputBindingInspector inspector)
       {
-        return ExprType.STRING;
-      }
-
-      @Override
-      public String stringify()
-      {
-        if (indexExpr != null) {
-          return StringUtils.format(
-              "%s(%s, %s, %s)",
-              FN_NAME,
-              arg.stringify(),
-              patternExpr.stringify(),
-              indexExpr.stringify()
-          );
-        }
-        return StringUtils.format("%s(%s, %s)", FN_NAME, arg.stringify(), patternExpr.stringify());
+        return ExpressionType.STRING;
       }
     }
-    return new RegexpExtractExpr(arg);
+    return new RegexpExtractExpr(args);
   }
 }

@@ -35,11 +35,14 @@ import org.apache.druid.curator.announcement.Announcer;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.concurrent.Execs;
 import org.apache.druid.segment.TestHelper;
+import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.realtime.appenderator.SegmentSchemas;
 import org.apache.druid.server.coordination.BatchDataSegmentAnnouncer;
 import org.apache.druid.server.coordination.ChangeRequestHistory;
 import org.apache.druid.server.coordination.ChangeRequestsSnapshot;
 import org.apache.druid.server.coordination.DataSegmentChangeRequest;
 import org.apache.druid.server.coordination.DruidServerMetadata;
+import org.apache.druid.server.coordination.SegmentSchemasChangeRequest;
 import org.apache.druid.server.coordination.ServerType;
 import org.apache.druid.server.initialization.BatchDataSegmentAnnouncerConfig;
 import org.apache.druid.server.initialization.ZkPathsConfig;
@@ -52,6 +55,7 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -232,6 +236,43 @@ public class BatchDataSegmentAnnouncerTest
   }
 
   @Test
+  public void testSingleTombstoneAnnounce() throws Exception
+  {
+    DataSegment firstSegment = makeSegment(0, true);
+
+    segmentAnnouncer.announceSegment(firstSegment);
+
+    List<String> zNodes = cf.getChildren().forPath(TEST_SEGMENTS_PATH);
+
+    for (String zNode : zNodes) {
+      Set<DataSegment> segments = segmentReader.read(JOINER.join(TEST_SEGMENTS_PATH, zNode));
+      Assert.assertEquals(segments.iterator().next(), firstSegment);
+    }
+
+    ChangeRequestsSnapshot<DataSegmentChangeRequest> snapshot = segmentAnnouncer.getSegmentChangesSince(
+        new ChangeRequestHistory.Counter(-1, -1)
+    ).get();
+    Assert.assertEquals(1, snapshot.getRequests().size());
+    Assert.assertEquals(1, snapshot.getCounter().getCounter());
+
+    segmentAnnouncer.unannounceSegment(firstSegment);
+
+    Assert.assertTrue(cf.getChildren().forPath(TEST_SEGMENTS_PATH).isEmpty());
+
+    snapshot = segmentAnnouncer.getSegmentChangesSince(
+        snapshot.getCounter()
+    ).get();
+    Assert.assertEquals(1, snapshot.getRequests().size());
+    Assert.assertEquals(2, snapshot.getCounter().getCounter());
+
+    snapshot = segmentAnnouncer.getSegmentChangesSince(
+        new ChangeRequestHistory.Counter(-1, -1)
+    ).get();
+    Assert.assertEquals(0, snapshot.getRequests().size());
+    Assert.assertEquals(2, snapshot.getCounter().getCounter());
+  }
+
+  @Test
   public void testSkipDimensions() throws Exception
   {
     skipDimensionsAndMetrics = true;
@@ -316,6 +357,98 @@ public class BatchDataSegmentAnnouncerTest
     for (int i = 0; i < 10; i++) {
       testBatchAnnounce(false);
     }
+  }
+
+  @Test
+  public void testSchemaAnnounce() throws Exception
+  {
+    String dataSource = "foo";
+    String segmentId = "id";
+    String taskId = "t1";
+    SegmentSchemas.SegmentSchema absoluteSchema1 =
+        new SegmentSchemas.SegmentSchema(
+            dataSource,
+            segmentId,
+            false,
+            20,
+            ImmutableList.of("dim1", "dim2"),
+            Collections.emptyList(),
+            ImmutableMap.of("dim1", ColumnType.STRING, "dim2", ColumnType.STRING)
+        );
+
+
+    SegmentSchemas.SegmentSchema absoluteSchema2 =
+        new SegmentSchemas.SegmentSchema(
+            dataSource,
+            segmentId,
+            false,
+            40,
+            ImmutableList.of("dim1", "dim2", "dim3"),
+            ImmutableList.of(),
+            ImmutableMap.of("dim1", ColumnType.UNKNOWN_COMPLEX, "dim2", ColumnType.STRING, "dim3", ColumnType.STRING)
+        );
+
+    SegmentSchemas.SegmentSchema deltaSchema =
+        new SegmentSchemas.SegmentSchema(
+            dataSource,
+            segmentId,
+            true,
+            40,
+            ImmutableList.of("dim3"),
+            ImmutableList.of("dim1"),
+            ImmutableMap.of("dim1", ColumnType.UNKNOWN_COMPLEX, "dim3", ColumnType.STRING)
+        );
+
+    segmentAnnouncer.announceSegmentSchemas(
+        taskId,
+        new SegmentSchemas(Collections.singletonList(absoluteSchema1)),
+        new SegmentSchemas(Collections.singletonList(absoluteSchema1)));
+
+    ChangeRequestsSnapshot<DataSegmentChangeRequest> snapshot;
+
+    snapshot = segmentAnnouncer.getSegmentChangesSince(
+        new ChangeRequestHistory.Counter(-1, -1)
+    ).get();
+    Assert.assertEquals(1, snapshot.getRequests().size());
+    Assert.assertEquals(1, snapshot.getCounter().getCounter());
+
+    Assert.assertEquals(
+        absoluteSchema1,
+        ((SegmentSchemasChangeRequest) snapshot.getRequests().get(0))
+            .getSegmentSchemas()
+            .getSegmentSchemaList()
+            .get(0)
+    );
+    segmentAnnouncer.announceSegmentSchemas(
+        taskId,
+        new SegmentSchemas(Collections.singletonList(absoluteSchema2)),
+        new SegmentSchemas(Collections.singletonList(deltaSchema))
+    );
+
+    snapshot = segmentAnnouncer.getSegmentChangesSince(snapshot.getCounter()).get();
+
+    Assert.assertEquals(
+        deltaSchema,
+        ((SegmentSchemasChangeRequest) snapshot.getRequests().get(0))
+            .getSegmentSchemas()
+            .getSegmentSchemaList()
+            .get(0)
+    );
+    Assert.assertEquals(1, snapshot.getRequests().size());
+    Assert.assertEquals(2, snapshot.getCounter().getCounter());
+
+    snapshot = segmentAnnouncer.getSegmentChangesSince(
+        new ChangeRequestHistory.Counter(-1, -1)
+    ).get();
+    Assert.assertEquals(
+        absoluteSchema2,
+        ((SegmentSchemasChangeRequest) snapshot.getRequests().get(0))
+            .getSegmentSchemas()
+            .getSegmentSchemaList()
+            .get(0)
+    );
+    Assert.assertEquals(1, snapshot.getRequests().size());
+    Assert.assertEquals(2, snapshot.getCounter().getCounter());
   }
 
   private void testBatchAnnounce(boolean testHistory) throws Exception
@@ -430,22 +563,31 @@ public class BatchDataSegmentAnnouncerTest
     }
   }
 
+  private DataSegment makeSegment(int offset, boolean isTombstone)
+  {
+    DataSegment.Builder builder = DataSegment.builder();
+    builder.dataSource("foo")
+           .interval(
+               new Interval(
+                   DateTimes.of("2013-01-01").plusDays(offset),
+                   DateTimes.of("2013-01-02").plusDays(offset)
+               )
+           )
+           .version(DateTimes.nowUtc().toString())
+           .dimensions(ImmutableList.of("dim1", "dim2"))
+           .metrics(ImmutableList.of("met1", "met2"))
+           .loadSpec(ImmutableMap.of("type", "local"))
+           .size(0);
+    if (isTombstone) {
+      builder.loadSpec(Collections.singletonMap("type", DataSegment.TOMBSTONE_LOADSPEC_TYPE));
+    }
+
+    return builder.build();
+  }
+
   private DataSegment makeSegment(int offset)
   {
-    return DataSegment.builder()
-                      .dataSource("foo")
-                      .interval(
-                          new Interval(
-                              DateTimes.of("2013-01-01").plusDays(offset),
-                              DateTimes.of("2013-01-02").plusDays(offset)
-                          )
-                      )
-                      .version(DateTimes.nowUtc().toString())
-                      .dimensions(ImmutableList.of("dim1", "dim2"))
-                      .metrics(ImmutableList.of("met1", "met2"))
-                      .loadSpec(ImmutableMap.of("type", "local"))
-                      .size(0)
-                      .build();
+    return makeSegment(offset, false);
   }
 
   private static class SegmentReader
@@ -464,9 +606,7 @@ public class BatchDataSegmentAnnouncerTest
       try {
         if (cf.checkExists().forPath(path) != null) {
           return jsonMapper.readValue(
-              cf.getData().forPath(path), new TypeReference<Set<DataSegment>>()
-              {
-              }
+              cf.getData().forPath(path), new TypeReference<>() {}
           );
         }
       }

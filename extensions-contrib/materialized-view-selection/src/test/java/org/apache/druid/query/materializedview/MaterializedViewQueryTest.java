@@ -22,8 +22,11 @@ package org.apache.druid.query.materializedview;
 import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.NamedType;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import org.apache.druid.common.config.NullHandling;
+import org.apache.druid.java.util.common.HumanReadableBytes;
 import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.query.Query;
 import org.apache.druid.query.QueryRunnerTestHelper;
@@ -43,8 +46,16 @@ import java.io.IOException;
 
 public class MaterializedViewQueryTest
 {
+  static {
+    NullHandling.initializeForTests();
+  }
+
   private static final ObjectMapper JSON_MAPPER = TestHelper.makeJsonMapper();
   private DataSourceOptimizer optimizer;
+
+  static {
+    NullHandling.initializeForTests();
+  }
 
   @Before
   public void setUp()
@@ -88,5 +99,37 @@ public class MaterializedViewQueryTest
     Assert.assertEquals(new TableDataSource(QueryRunnerTestHelper.DATA_SOURCE), query.getDataSource());
     Assert.assertEquals(QueryRunnerTestHelper.ALL_GRAN, query.getGranularity());
     Assert.assertEquals(QueryRunnerTestHelper.FULL_ON_INTERVAL_SPEC.getIntervals(), query.getIntervals());
+  }
+
+  @Test
+  public void testGetContextHumanReadableBytes()
+  {
+    TopNQuery topNQuery = new TopNQueryBuilder()
+        .dataSource(QueryRunnerTestHelper.DATA_SOURCE)
+        .granularity(QueryRunnerTestHelper.ALL_GRAN)
+        .dimension(QueryRunnerTestHelper.MARKET_DIMENSION)
+        .metric(QueryRunnerTestHelper.INDEX_METRIC)
+        .threshold(4)
+        .intervals(QueryRunnerTestHelper.FULL_ON_INTERVAL_SPEC)
+        .aggregators(
+            Lists.newArrayList(
+                Iterables.concat(
+                    QueryRunnerTestHelper.COMMON_DOUBLE_AGGREGATORS,
+                    Lists.newArrayList(
+                        new DoubleMaxAggregatorFactory("maxIndex", "index"),
+                        new DoubleMinAggregatorFactory("minIndex", "index")
+                    )
+                )
+            )
+        )
+        .context(
+            ImmutableMap.of(
+                "maxOnDiskStorage", "20M"
+            )
+        )
+        .postAggregators(QueryRunnerTestHelper.ADD_ROWS_INDEX_CONSTANT)
+        .build();
+    MaterializedViewQuery query = new MaterializedViewQuery(topNQuery, optimizer);
+    Assert.assertEquals(20_000_000, query.context().getHumanReadableBytes("maxOnDiskStorage", HumanReadableBytes.ZERO).getBytes());
   }
 }

@@ -24,6 +24,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.primitives.Ints;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongList;
+import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
@@ -31,7 +32,6 @@ import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.common.io.smoosh.FileSmoosher;
 import org.apache.druid.java.util.common.io.smoosh.SmooshedWriter;
 import org.apache.druid.segment.serde.MetaSerdeHelper;
-import org.apache.druid.segment.serde.Serializer;
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.WriteOutBytes;
 
@@ -46,8 +46,11 @@ import java.nio.channels.WritableByteChannel;
 
 /**
  * Streams arrays of objects out in the binary format described by {@link GenericIndexed}
+ *
+ * The version {@link EncodedStringDictionaryWriter#VERSION} is reserved and must never be specified as the
+ * {@link GenericIndexed} version byte, else it will interfere with string column deserialization.
  */
-public class GenericIndexedWriter<T> implements Serializer
+public class GenericIndexedWriter<T> implements DictionaryWriter<T>
 {
   private static final int PAGE_SIZE = 4096;
 
@@ -70,29 +73,30 @@ public class GenericIndexedWriter<T> implements Serializer
       .writeByteArray(x -> x.fileNameByteArray);
 
 
-  static GenericIndexedWriter<ByteBuffer> ofCompressedByteBuffers(
+  public static GenericIndexedWriter<ByteBuffer> ofCompressedByteBuffers(
       final SegmentWriteOutMedium segmentWriteOutMedium,
       final String filenameBase,
-      final CompressionStrategy compressionStrategy,
-      final int bufferSize
-  )
-  {
-    GenericIndexedWriter<ByteBuffer> writer = new GenericIndexedWriter<>(
-        segmentWriteOutMedium,
-        filenameBase,
-        compressedByteBuffersWriteObjectStrategy(compressionStrategy, bufferSize, segmentWriteOutMedium.getCloser())
-    );
-    writer.objectsSorted = false;
-    return writer;
-  }
-
-  static ObjectStrategy<ByteBuffer> compressedByteBuffersWriteObjectStrategy(
       final CompressionStrategy compressionStrategy,
       final int bufferSize,
       final Closer closer
   )
   {
-    return new ObjectStrategy<ByteBuffer>()
+    GenericIndexedWriter<ByteBuffer> writer = new GenericIndexedWriter<>(
+        segmentWriteOutMedium,
+        filenameBase,
+        compressedByteBuffersWriteObjectStrategy(compressionStrategy, bufferSize, closer)
+    );
+    writer.objectsSorted = false;
+    return writer;
+  }
+
+  public static ObjectStrategy<ByteBuffer> compressedByteBuffersWriteObjectStrategy(
+      final CompressionStrategy compressionStrategy,
+      final int bufferSize,
+      final Closer closer
+  )
+  {
+    return new ObjectStrategy<>()
     {
       private final CompressionStrategy.Compressor compressor = compressionStrategy.getCompressor();
       private final ByteBuffer compressedDataBuffer = compressor.allocateOutBuffer(bufferSize, closer);
@@ -122,6 +126,12 @@ public class GenericIndexedWriter<T> implements Serializer
         int valPos = val.position();
         out.write(compressor.compress(val, compressedDataBuffer));
         val.position(valPos);
+      }
+
+      @Override
+      public boolean canCompare()
+      {
+        return false;
       }
 
       @Override
@@ -207,6 +217,7 @@ public class GenericIndexedWriter<T> implements Serializer
     }
   }
 
+  @Override
   public void open() throws IOException
   {
     headerOut = segmentWriteOutMedium.makeWriteOutBytes();
@@ -218,13 +229,20 @@ public class GenericIndexedWriter<T> implements Serializer
     objectsSorted = false;
   }
 
+  @Override
+  public boolean isSorted()
+  {
+    return objectsSorted;
+  }
+
   @VisibleForTesting
   void setIntMaxForCasting(final int intMaxForCasting)
   {
     this.intMaxForCasting = intMaxForCasting;
   }
 
-  public void write(@Nullable T objectToWrite) throws IOException
+  @Override
+  public int write(@Nullable T objectToWrite) throws IOException
   {
     if (objectsSorted && prevObject != null && strategy.compare(prevObject, objectToWrite) >= 0) {
       objectsSorted = false;
@@ -245,7 +263,7 @@ public class GenericIndexedWriter<T> implements Serializer
 
     // Increment number of values written. Important to do this after the check above, since numWritten is
     // accessed during "initializeHeaderOutLong" to determine the length of the header.
-    ++numWritten;
+    int retVal = numWritten++;
 
     if (!requireMultipleFiles) {
       headerOut.writeInt(checkedCastNonnegativeLongToInt(valuesOut.size()));
@@ -262,9 +280,11 @@ public class GenericIndexedWriter<T> implements Serializer
     if (objectsSorted) {
       prevObject = objectToWrite;
     }
+    return retVal;
   }
 
   @Nullable
+  @Override
   public T get(int index) throws IOException
   {
     long startOffset;
@@ -276,12 +296,27 @@ public class GenericIndexedWriter<T> implements Serializer
     long endOffset = getOffset(index);
     int valueSize = checkedCastNonnegativeLongToInt(endOffset - startOffset);
     if (valueSize == 0) {
-      return null;
+      if (NullHandling.replaceWithDefault()) {
+        return null;
+      }
+      ByteBuffer bb = ByteBuffer.allocate(Integer.BYTES);
+      valuesOut.readFully(startOffset - Integer.BYTES, bb);
+      bb.flip();
+      if (bb.getInt() < 0) {
+        return null;
+      }
+      return strategy.fromByteBuffer(bb, 0);
     }
     ByteBuffer bb = ByteBuffer.allocate(valueSize);
     valuesOut.readFully(startOffset, bb);
     bb.clear();
     return strategy.fromByteBuffer(bb, valueSize);
+  }
+
+  @Override
+  public int getCardinality()
+  {
+    return numWritten;
   }
 
   private long getOffset(int index) throws IOException

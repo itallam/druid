@@ -33,9 +33,14 @@ import org.apache.druid.initialization.DruidModule;
 import org.apache.druid.initialization.Initialization;
 import org.apache.druid.segment.incremental.RowIngestionMetersFactory;
 import org.apache.druid.segment.indexing.DataSchema;
+import org.apache.druid.segment.realtime.ChatHandlerProvider;
+import org.apache.druid.segment.realtime.NoopChatHandlerProvider;
 import org.apache.druid.segment.realtime.appenderator.AppenderatorsManager;
-import org.apache.druid.segment.realtime.firehose.ChatHandlerProvider;
-import org.apache.druid.segment.realtime.firehose.NoopChatHandlerProvider;
+import org.apache.druid.server.security.Action;
+import org.apache.druid.server.security.Resource;
+import org.apache.druid.server.security.ResourceAction;
+import org.apache.druid.server.security.ResourceType;
+import org.joda.time.Duration;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
@@ -46,8 +51,11 @@ import java.util.Collections;
 
 public class KinesisIndexTaskSerdeTest
 {
-  private static final DataSchema DATA_SCHEMA = new DataSchema("dataSource", null, null, null, null, null, null, null);
+  private static final DataSchema DATA_SCHEMA =
+      DataSchema.builder().withDataSource("dataSource").build();
   private static final KinesisIndexTaskTuningConfig TUNING_CONFIG = new KinesisIndexTaskTuningConfig(
+      null,
+      null,
       null,
       null,
       null,
@@ -88,8 +96,7 @@ public class KinesisIndexTaskSerdeTest
       null,
       null,
       null,
-      null,
-      false
+      Duration.standardHours(2).getStandardMinutes()
   );
   private static final String ACCESS_KEY = "test-access-key";
   private static final String SECRET_KEY = "test-secret-key";
@@ -117,6 +124,7 @@ public class KinesisIndexTaskSerdeTest
         TUNING_CONFIG,
         IO_CONFIG,
         null,
+        false,
         null
     );
     ObjectMapper objectMapper = createObjectMapper();
@@ -127,6 +135,14 @@ public class KinesisIndexTaskSerdeTest
     Assert.assertEquals(ACCESS_KEY, awsCredentialsConfig.getAccessKey().getPassword());
     Assert.assertEquals(SECRET_KEY, awsCredentialsConfig.getSecretKey().getPassword());
     Assert.assertEquals(FILE_SESSION_CREDENTIALS, awsCredentialsConfig.getFileSessionCredentials());
+    Assert.assertEquals(
+        Collections.singleton(
+            new ResourceAction(new Resource(
+                KinesisIndexingServiceModule.SCHEME,
+                ResourceType.EXTERNAL
+            ), Action.READ)),
+        target.getInputSourceResources()
+    );
   }
 
   private static ObjectMapper createObjectMapper()

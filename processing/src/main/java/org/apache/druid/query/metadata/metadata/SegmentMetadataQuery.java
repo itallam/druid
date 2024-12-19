@@ -22,8 +22,8 @@ package org.apache.druid.query.metadata.metadata;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.druid.error.InvalidInput;
+import org.apache.druid.java.util.common.Cacheable;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.query.BaseQuery;
@@ -38,7 +38,6 @@ import org.apache.druid.query.spec.MultipleIntervalSegmentSpec;
 import org.apache.druid.query.spec.QuerySegmentSpec;
 import org.joda.time.Interval;
 
-import java.nio.ByteBuffer;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -46,16 +45,9 @@ import java.util.Objects;
 
 public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
 {
-  /**
-   * The SegmentMetadataQuery cache key may contain UTF-8 column name strings.
-   * Prepend 0xFF before the analysisTypes as a separator to avoid
-   * any potential confusion with string values.
-   */
-  public static final byte[] ANALYSIS_TYPES_CACHE_PREFIX = new byte[] {(byte) 0xFF};
-
   private static final QuerySegmentSpec DEFAULT_SEGMENT_SPEC = new MultipleIntervalSegmentSpec(Intervals.ONLY_ETERNITY);
 
-  public enum AnalysisType
+  public enum AnalysisType implements Cacheable
   {
     CARDINALITY,
     SIZE,
@@ -79,6 +71,7 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
       return valueOf(StringUtils.toUpperCase(name));
     }
 
+    @Override
     public byte[] getCacheKey()
     {
       return new byte[] {(byte) this.ordinal()};
@@ -89,7 +82,7 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
   private final boolean merge;
   private final boolean usingDefaultInterval;
   private final EnumSet<AnalysisType> analysisTypes;
-  private final boolean lenientAggregatorMerge;
+  private final AggregatorMergeStrategy aggregatorMergeStrategy;
 
   @JsonCreator
   public SegmentMetadataQuery(
@@ -100,10 +93,11 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
       @JsonProperty("context") Map<String, Object> context,
       @JsonProperty("analysisTypes") EnumSet<AnalysisType> analysisTypes,
       @JsonProperty("usingDefaultInterval") Boolean useDefaultInterval,
-      @JsonProperty("lenientAggregatorMerge") Boolean lenientAggregatorMerge
+      @Deprecated @JsonProperty("lenientAggregatorMerge") Boolean lenientAggregatorMerge,
+      @JsonProperty("aggregatorMergeStrategy") AggregatorMergeStrategy aggregatorMergeStrategy
   )
   {
-    super(dataSource, querySegmentSpec == null ? DEFAULT_SEGMENT_SPEC : querySegmentSpec, false, context);
+    super(dataSource, querySegmentSpec == null ? DEFAULT_SEGMENT_SPEC : querySegmentSpec, context);
 
     if (querySegmentSpec == null) {
       this.usingDefaultInterval = true;
@@ -113,11 +107,28 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
     this.toInclude = toInclude == null ? new AllColumnIncluderator() : toInclude;
     this.merge = merge == null ? false : merge;
     this.analysisTypes = analysisTypes;
-    Preconditions.checkArgument(
-        dataSource instanceof TableDataSource || dataSource instanceof UnionDataSource,
-        "SegmentMetadataQuery only supports table or union datasource"
-    );
-    this.lenientAggregatorMerge = lenientAggregatorMerge == null ? false : lenientAggregatorMerge;
+    if (!(dataSource instanceof TableDataSource || dataSource instanceof UnionDataSource)) {
+      throw InvalidInput.exception("Invalid dataSource type [%s]. "
+                                   + "SegmentMetadataQuery only supports table or union datasources.", dataSource);
+    }
+    // We validate that there's only one parameter specified by the user. While the deprecated property is still
+    // supported in the API, we only set the new member variable either using old or new property, so we've a single source
+    // of truth for consumers of this class variable. The defaults are to preserve backwards compatibility.
+    // In a future release, 28.0+, we can remove the deprecated property lenientAggregatorMerge.
+    if (lenientAggregatorMerge != null && aggregatorMergeStrategy != null) {
+      throw InvalidInput.exception("Both lenientAggregatorMerge [%s] and aggregatorMergeStrategy [%s] parameters cannot be set."
+                                   + " Consider using aggregatorMergeStrategy since lenientAggregatorMerge is deprecated.",
+                                   lenientAggregatorMerge, aggregatorMergeStrategy);
+    }
+    if (lenientAggregatorMerge != null) {
+      this.aggregatorMergeStrategy = lenientAggregatorMerge
+                                     ? AggregatorMergeStrategy.LENIENT
+                                     : AggregatorMergeStrategy.STRICT;
+    } else if (aggregatorMergeStrategy != null) {
+      this.aggregatorMergeStrategy = aggregatorMergeStrategy;
+    } else {
+      this.aggregatorMergeStrategy = AggregatorMergeStrategy.STRICT;
+    }
   }
 
   @JsonProperty
@@ -163,9 +174,9 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
   }
 
   @JsonProperty
-  public boolean isLenientAggregatorMerge()
+  public AggregatorMergeStrategy getAggregatorMergeStrategy()
   {
-    return lenientAggregatorMerge;
+    return aggregatorMergeStrategy;
   }
 
   public boolean analyzingInterval()
@@ -191,25 +202,6 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
   public boolean hasRollup()
   {
     return analysisTypes.contains(AnalysisType.ROLLUP);
-  }
-
-  public byte[] getAnalysisTypesCacheKey()
-  {
-    int size = 1;
-    List<byte[]> typeBytesList = Lists.newArrayListWithExpectedSize(analysisTypes.size());
-    for (AnalysisType analysisType : analysisTypes) {
-      final byte[] bytes = analysisType.getCacheKey();
-      typeBytesList.add(bytes);
-      size += bytes.length;
-    }
-
-    final ByteBuffer bytes = ByteBuffer.allocate(size);
-    bytes.put(ANALYSIS_TYPES_CACHE_PREFIX);
-    for (byte[] typeBytes : typeBytesList) {
-      bytes.put(typeBytes);
-    }
-
-    return bytes.array();
   }
 
   @Override
@@ -263,7 +255,7 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
         ", merge=" + merge +
         ", usingDefaultInterval=" + usingDefaultInterval +
         ", analysisTypes=" + analysisTypes +
-        ", lenientAggregatorMerge=" + lenientAggregatorMerge +
+        ", aggregatorMergeStrategy=" + aggregatorMergeStrategy +
         '}';
   }
 
@@ -282,9 +274,9 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
     SegmentMetadataQuery that = (SegmentMetadataQuery) o;
     return merge == that.merge &&
         usingDefaultInterval == that.usingDefaultInterval &&
-        lenientAggregatorMerge == that.lenientAggregatorMerge &&
         Objects.equals(toInclude, that.toInclude) &&
-        Objects.equals(analysisTypes, that.analysisTypes);
+        Objects.equals(analysisTypes, that.analysisTypes) &&
+        Objects.equals(aggregatorMergeStrategy, that.aggregatorMergeStrategy);
   }
 
   @Override
@@ -296,7 +288,7 @@ public class SegmentMetadataQuery extends BaseQuery<SegmentAnalysis>
         merge,
         usingDefaultInterval,
         analysisTypes,
-        lenientAggregatorMerge
+        aggregatorMergeStrategy
     );
   }
 }

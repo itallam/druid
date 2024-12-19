@@ -72,16 +72,16 @@ public class QueriesTest
         )
     );
 
-    boolean exceptionOccured = false;
+    boolean exceptionOccurred = false;
 
     try {
       Queries.prepareAggregations(ImmutableList.of(), aggFactories, postAggs);
     }
     catch (IllegalArgumentException e) {
-      exceptionOccured = true;
+      exceptionOccurred = true;
     }
 
-    Assert.assertFalse(exceptionOccured);
+    Assert.assertFalse(exceptionOccurred);
   }
 
   @Test
@@ -104,16 +104,16 @@ public class QueriesTest
         )
     );
 
-    boolean exceptionOccured = false;
+    boolean exceptionOccurred = false;
 
     try {
       Queries.prepareAggregations(ImmutableList.of(), aggFactories, postAggs);
     }
     catch (IllegalArgumentException e) {
-      exceptionOccured = true;
+      exceptionOccurred = true;
     }
 
-    Assert.assertTrue(exceptionOccured);
+    Assert.assertTrue(exceptionOccurred);
   }
 
   @Test
@@ -158,16 +158,16 @@ public class QueriesTest
         )
     );
 
-    boolean exceptionOccured = false;
+    boolean exceptionOccurred = false;
 
     try {
       Queries.prepareAggregations(ImmutableList.of(), aggFactories, postAggs);
     }
     catch (IllegalArgumentException e) {
-      exceptionOccured = true;
+      exceptionOccurred = true;
     }
 
-    Assert.assertFalse(exceptionOccured);
+    Assert.assertFalse(exceptionOccurred);
   }
 
   @Test
@@ -212,16 +212,16 @@ public class QueriesTest
         )
     );
 
-    boolean exceptionOccured = false;
+    boolean exceptionOccurred = false;
 
     try {
       Queries.prepareAggregations(ImmutableList.of(), aggFactories, postAggs);
     }
     catch (IllegalArgumentException e) {
-      exceptionOccured = true;
+      exceptionOccurred = true;
     }
 
-    Assert.assertTrue(exceptionOccured);
+    Assert.assertTrue(exceptionOccurred);
   }
 
   @Test
@@ -425,7 +425,9 @@ public class QueriesTest
                                                   "\"foo.x\" == \"bar.x\"",
                                                   JoinType.INNER,
                                                   null,
-                                                  ExprMacroTable.nil()
+                                                  ExprMacroTable.nil(),
+                                                  null,
+                                                  JoinAlgorithm.BROADCAST
                                               )
                                           )
                                           .intervals("2000/3000")
@@ -462,7 +464,9 @@ public class QueriesTest
                                                       "\"foo.x\" == \"bar.x\"",
                                                       JoinType.INNER,
                                                       null,
-                                                      ExprMacroTable.nil()
+                                                      ExprMacroTable.nil(),
+                                                      null,
+                                                      JoinAlgorithm.BROADCAST
                                                   )
                                               )
                                               .intervals("2000/3000")
@@ -500,14 +504,20 @@ public class QueriesTest
                                         "\"foo.x\" == \"bar.x\"",
                                         JoinType.INNER,
                                         TrueDimFilter.instance(),
-                                        ExprMacroTable.nil()
+                                        ExprMacroTable.nil(),
+                                        null,
+                                        JoinAlgorithm.BROADCAST
+
                                     ),
                                     new TableDataSource("foo_outer"),
                                     "j0.",
                                     "\"foo_outer.x\" == \"bar.x\"",
                                     JoinType.INNER,
                                     null,
-                                    ExprMacroTable.nil()
+                                    ExprMacroTable.nil(),
+                                    null,
+                                    JoinAlgorithm.BROADCAST
+
                                 )
 
                             )
@@ -533,14 +543,20 @@ public class QueriesTest
                                             "\"foo.x\" == \"bar.x\"",
                                             JoinType.INNER,
                                             TrueDimFilter.instance(),
-                                            ExprMacroTable.nil()
+                                            ExprMacroTable.nil(),
+                                            null,
+                                            JoinAlgorithm.BROADCAST
+
                                         ),
                                         new TableDataSource("foo_outer"),
                                         "j0.",
                                         "\"foo_outer.x\" == \"bar.x\"",
                                         JoinType.INNER,
                                         null,
-                                        ExprMacroTable.nil()
+                                        ExprMacroTable.nil(),
+                                        null,
+                                        JoinAlgorithm.BROADCAST
+
                                     )
 
                                 )

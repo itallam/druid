@@ -31,7 +31,7 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
-import org.apache.commons.lang.BooleanUtils;
+import org.apache.commons.lang3.BooleanUtils;
 import org.apache.druid.indexer.DataSegmentAndIndexZipFilePath;
 import org.apache.druid.indexer.HadoopDruidDetermineConfigurationJob;
 import org.apache.druid.indexer.HadoopDruidIndexerConfig;
@@ -43,11 +43,9 @@ import org.apache.druid.indexer.MetadataStorageUpdaterJobHandler;
 import org.apache.druid.indexer.TaskMetricsGetter;
 import org.apache.druid.indexer.TaskMetricsUtils;
 import org.apache.druid.indexer.TaskStatus;
-import org.apache.druid.indexing.common.IngestionStatsAndErrorsTaskReport;
-import org.apache.druid.indexing.common.IngestionStatsAndErrorsTaskReportData;
+import org.apache.druid.indexer.report.TaskReport;
 import org.apache.druid.indexing.common.TaskLock;
 import org.apache.druid.indexing.common.TaskLockType;
-import org.apache.druid.indexing.common.TaskReport;
 import org.apache.druid.indexing.common.TaskToolbox;
 import org.apache.druid.indexing.common.actions.TaskActionClient;
 import org.apache.druid.indexing.common.actions.TimeChunkLockAcquireAction;
@@ -61,15 +59,19 @@ import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.segment.incremental.RowIngestionMeters;
 import org.apache.druid.segment.indexing.granularity.ArbitraryGranularitySpec;
 import org.apache.druid.segment.indexing.granularity.GranularitySpec;
-import org.apache.druid.segment.realtime.firehose.ChatHandler;
-import org.apache.druid.segment.realtime.firehose.ChatHandlerProvider;
+import org.apache.druid.segment.realtime.ChatHandler;
+import org.apache.druid.segment.realtime.ChatHandlerProvider;
 import org.apache.druid.server.security.Action;
 import org.apache.druid.server.security.AuthorizerMapper;
+import org.apache.druid.server.security.Resource;
+import org.apache.druid.server.security.ResourceAction;
+import org.apache.druid.server.security.ResourceType;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.util.ToolRunner;
 import org.joda.time.Interval;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.GET;
@@ -83,16 +85,19 @@ import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class HadoopIndexTask extends HadoopTask implements ChatHandler
 {
+  public static final String TYPE = "index_hadoop";
+  public static final String INPUT_SOURCE_TYPE = "hadoop";
   private static final Logger log = new Logger(HadoopIndexTask.class);
   private static final String HADOOP_JOB_ID_FILENAME = "mapReduceJobId.json";
-  private static final String TYPE = "index_hadoop";
   private TaskConfig taskConfig = null;
 
   private static String getTheDataSource(HadoopIngestionSpec spec)
@@ -166,7 +171,7 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
     );
     this.authorizerMapper = authorizerMapper;
     this.chatHandlerProvider = Optional.fromNullable(chatHandlerProvider);
-    this.spec = spec;
+    this.spec = context == null ? spec : spec.withContext(context);
 
     // Some HadoopIngestionSpec stuff doesn't make sense in the context of the indexing service
     Preconditions.checkArgument(
@@ -187,7 +192,15 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
   @Override
   public String getType()
   {
-    return "index_hadoop";
+    return TYPE;
+  }
+
+  @Nonnull
+  @JsonIgnore
+  @Override
+  public Set<ResourceAction> getInputSourceResources()
+  {
+    return Collections.singleton(new ResourceAction(new Resource(INPUT_SOURCE_TYPE, ResourceType.EXTERNAL), Action.READ));
   }
 
   @Override
@@ -198,7 +211,17 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
       Interval interval = JodaUtils.umbrellaInterval(
           JodaUtils.condenseIntervals(intervals)
       );
-      return taskActionClient.submit(new TimeChunkLockTryAcquireAction(TaskLockType.EXCLUSIVE, interval)) != null;
+      final TaskLock lock = taskActionClient.submit(
+          new TimeChunkLockTryAcquireAction(
+              TaskLockType.EXCLUSIVE,
+              interval
+          )
+      );
+      if (lock == null) {
+        return false;
+      }
+      lock.assertNotRevoked();
+      return true;
     } else {
       return true;
     }
@@ -317,6 +340,7 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
     try {
       registerResourceCloserOnAbnormalExit(config -> killHadoopJob());
       String hadoopJobIdFile = getHadoopJobIdFileName();
+      logExtensionsConfig();
       final ClassLoader loader = buildClassLoader(toolbox);
       boolean determineIntervals = spec.getDataSchema().getGranularitySpec().inputIntervals().isEmpty();
 
@@ -393,6 +417,7 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
             ),
             "Cannot acquire a lock for interval[%s]", interval
         );
+        lock.assertNotRevoked();
         version = lock.getVersion();
       } else {
         Iterable<TaskLock> locks = getTaskLocks(toolbox.getTaskActionClient());
@@ -405,13 +430,15 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
         if (specVersion.compareTo(version) < 0) {
           version = specVersion;
         } else {
-          log.error(
-              "Spec version can not be greater than or equal to the lock version, Spec version: [%s] Lock version: [%s].",
-              specVersion,
-              version
-          );
+          String errMsg =
+              StringUtils.format(
+                  "Spec version can not be greater than or equal to the lock version, Spec version: [%s] Lock version: [%s].",
+                  specVersion,
+                  version
+              );
+          log.error(errMsg);
           toolbox.getTaskReportFileWriter().write(getId(), null);
-          return TaskStatus.failure(getId());
+          return TaskStatus.failure(getId(), errMsg);
         }
       }
 
@@ -465,7 +492,7 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
           // for awaitSegmentAvailabilityTimeoutMillis
           if (spec.getTuningConfig().getAwaitSegmentAvailabilityTimeoutMillis() > 0) {
             ingestionState = IngestionState.SEGMENT_AVAILABILITY_WAIT;
-            segmentAvailabilityConfirmationCompleted = waitForSegmentAvailability(
+            waitForSegmentAvailability(
                 toolbox,
                 segments,
                 spec.getTuningConfig().getAwaitSegmentAvailabilityTimeoutMillis()
@@ -648,23 +675,13 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
     return Response.ok(returnMap).build();
   }
 
-  private Map<String, TaskReport> getTaskCompletionReports()
+  private TaskReport.ReportMap getTaskCompletionReports()
   {
-    return TaskReport.buildTaskReports(
-        new IngestionStatsAndErrorsTaskReport(
-            getId(),
-            new IngestionStatsAndErrorsTaskReportData(
-                ingestionState,
-                null,
-                getTaskCompletionRowStats(),
-                errorMsg,
-                segmentAvailabilityConfirmationCompleted
-            )
-        )
-    );
+    return buildIngestionStatsAndContextReport(ingestionState, errorMsg, null, null);
   }
 
-  private Map<String, Object> getTaskCompletionRowStats()
+  @Override
+  protected Map<String, Object> getTaskCompletionRowStats()
   {
     Map<String, Object> metrics = new HashMap<>();
     if (determineConfigStatus != null) {
@@ -904,9 +921,7 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
   public static class HadoopRenameSegmentIndexFilesRunner
   {
     TypeReference<List<DataSegmentAndIndexZipFilePath>> LIST_DATA_SEGMENT_AND_INDEX_ZIP_FILE_PATH =
-        new TypeReference<List<DataSegmentAndIndexZipFilePath>>()
-        {
-        };
+        new TypeReference<>() {};
 
     public void runTask(String[] args) throws Exception
     {
@@ -946,9 +961,7 @@ public class HadoopIndexTask extends HadoopTask implements ChatHandler
   public static class HadoopIndexerGeneratorCleanupRunner
   {
     TypeReference<List<DataSegmentAndIndexZipFilePath>> LIST_DATA_SEGMENT_AND_INDEX_ZIP_FILE_PATH =
-        new TypeReference<List<DataSegmentAndIndexZipFilePath>>()
-        {
-        };
+        new TypeReference<>() {};
 
     public void runTask(String[] args) throws Exception
     {

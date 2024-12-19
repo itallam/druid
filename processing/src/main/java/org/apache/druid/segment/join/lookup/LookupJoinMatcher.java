@@ -37,7 +37,8 @@ import org.apache.druid.segment.ColumnProcessors;
 import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.DimensionHandlerUtils;
 import org.apache.druid.segment.DimensionSelector;
-import org.apache.druid.segment.column.ValueType;
+import org.apache.druid.segment.column.ColumnCapabilities;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.data.IndexedInts;
 import org.apache.druid.segment.join.Equality;
 import org.apache.druid.segment.join.JoinConditionAnalysis;
@@ -56,12 +57,12 @@ import java.util.stream.Collectors;
 public class LookupJoinMatcher implements JoinMatcher
 {
   private static final ColumnProcessorFactory<Supplier<String>> LEFT_KEY_READER =
-      new ColumnProcessorFactory<Supplier<String>>()
+      new ColumnProcessorFactory<>()
       {
         @Override
-        public ValueType defaultType()
+        public ColumnType defaultType()
         {
-          return ValueType.STRING;
+          return ColumnType.STRING;
         }
 
         @Override
@@ -113,6 +114,15 @@ public class LookupJoinMatcher implements JoinMatcher
         }
 
         @Override
+        public Supplier<String> makeArrayProcessor(
+            BaseObjectColumnValueSelector<?> selector,
+            @Nullable ColumnCapabilities columnCapabilities
+        )
+        {
+          throw new QueryUnsupportedException("Joining against a ARRAY columns is not supported.");
+        }
+
+        @Override
         public Supplier<String> makeComplexProcessor(BaseObjectColumnValueSelector<?> selector)
         {
           return () -> null;
@@ -155,7 +165,7 @@ public class LookupJoinMatcher implements JoinMatcher
                                       expr ->
                                           ColumnProcessors.makeProcessor(
                                               expr,
-                                              ValueType.STRING,
+                                              ColumnType.STRING,
                                               LEFT_KEY_READER,
                                               leftSelectorFactory
                                           )
@@ -174,8 +184,8 @@ public class LookupJoinMatcher implements JoinMatcher
     // Verify that extractor can be iterated when needed.
     if (condition.isAlwaysTrue() || remainderNeeded) {
       Preconditions.checkState(
-          extractor.canIterate(),
-          "Cannot iterate lookup, but iteration is required for this join"
+          extractor.supportsAsMap(),
+          "Cannot read lookup as Map, which is required for this join"
       );
     }
   }
@@ -221,7 +231,7 @@ public class LookupJoinMatcher implements JoinMatcher
     if (condition.isAlwaysFalse()) {
       currentEntry.set(null);
     } else if (condition.isAlwaysTrue()) {
-      currentIterator = extractor.iterable().iterator();
+      currentIterator = extractor.asMap().entrySet().iterator();
       nextMatch();
     } else {
       // Not always true, not always false, it's a normal condition.
@@ -275,13 +285,13 @@ public class LookupJoinMatcher implements JoinMatcher
     matchingRemainder = true;
 
     if (condition.isAlwaysFalse()) {
-      currentIterator = extractor.iterable().iterator();
+      currentIterator = extractor.asMap().entrySet().iterator();
     } else if (condition.isAlwaysTrue()) {
       currentIterator = Collections.emptyIterator();
     } else {
       //noinspection ConstantConditions - entry can not be null because extractor.iterable() prevents this
       currentIterator = Iterators.filter(
-          extractor.iterable().iterator(),
+          extractor.asMap().entrySet().iterator(),
           entry -> !matchedKeys.contains(entry.getKey())
       );
     }

@@ -26,7 +26,7 @@ import com.google.inject.Inject;
 import com.sun.jersey.spi.container.ContainerRequest;
 import org.apache.druid.common.utils.IdUtils;
 import org.apache.druid.indexing.common.task.Task;
-import org.apache.druid.indexing.overlord.TaskStorageQueryAdapter;
+import org.apache.druid.indexing.overlord.TaskQueryTool;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.server.http.security.AbstractResourceFilter;
 import org.apache.druid.server.security.Access;
@@ -38,6 +38,7 @@ import org.apache.druid.server.security.ResourceAction;
 import org.apache.druid.server.security.ResourceType;
 
 import javax.ws.rs.WebApplicationException;
+import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
 /**
@@ -48,16 +49,16 @@ import javax.ws.rs.core.Response;
  */
 public class TaskResourceFilter extends AbstractResourceFilter
 {
-  private final TaskStorageQueryAdapter taskStorageQueryAdapter;
+  private final TaskQueryTool taskQueryTool;
 
   @Inject
   public TaskResourceFilter(
-      TaskStorageQueryAdapter taskStorageQueryAdapter,
+      TaskQueryTool taskQueryTool,
       AuthorizerMapper authorizerMapper
   )
   {
     super(authorizerMapper);
-    this.taskStorageQueryAdapter = taskStorageQueryAdapter;
+    this.taskQueryTool = taskQueryTool;
   }
 
   @Override
@@ -75,10 +76,11 @@ public class TaskResourceFilter extends AbstractResourceFilter
 
     IdUtils.validateId("taskId", taskId);
 
-    Optional<Task> taskOptional = taskStorageQueryAdapter.getTask(taskId);
+    Optional<Task> taskOptional = taskQueryTool.getTask(taskId);
     if (!taskOptional.isPresent()) {
       throw new WebApplicationException(
-          Response.status(Response.Status.BAD_REQUEST)
+          Response.status(Response.Status.NOT_FOUND)
+                  .type(MediaType.TEXT_PLAIN)
                   .entity(StringUtils.format("Cannot find any task with id: [%s]", taskId))
                   .build()
       );

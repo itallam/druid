@@ -19,11 +19,14 @@
 
 package org.apache.druid.sql.calcite.schema;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.util.concurrent.Futures;
 import junitparams.converters.Nullable;
 import org.apache.calcite.DataContext;
 import org.apache.calcite.adapter.java.JavaTypeFactory;
@@ -35,11 +38,12 @@ import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.Table;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.druid.client.DruidServer;
+import org.apache.druid.client.FilteredServerInventoryView;
 import org.apache.druid.client.ImmutableDruidDataSource;
 import org.apache.druid.client.ImmutableDruidServer;
-import org.apache.druid.client.InventoryView;
-import org.apache.druid.client.ServerInventoryView;
+import org.apache.druid.client.InternalQueryConfig;
 import org.apache.druid.client.TimelineServerView;
+import org.apache.druid.client.coordinator.NoopCoordinatorClient;
 import org.apache.druid.common.config.NullHandling;
 import org.apache.druid.data.input.InputRow;
 import org.apache.druid.discovery.DataNodeService;
@@ -48,7 +52,11 @@ import org.apache.druid.discovery.DruidLeaderClient;
 import org.apache.druid.discovery.DruidNodeDiscovery;
 import org.apache.druid.discovery.DruidNodeDiscoveryProvider;
 import org.apache.druid.discovery.NodeRole;
+import org.apache.druid.indexer.TaskStatusPlus;
 import org.apache.druid.indexer.partitions.DynamicPartitionsSpec;
+import org.apache.druid.indexing.overlord.supervisor.SupervisorStatus;
+import org.apache.druid.java.util.common.CloseableIterators;
+import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.IAE;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Intervals;
@@ -56,7 +64,6 @@ import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.http.client.Request;
 import org.apache.druid.java.util.http.client.response.HttpResponseHandler;
-import org.apache.druid.java.util.http.client.response.InputStreamFullResponseHandler;
 import org.apache.druid.java.util.http.client.response.InputStreamFullResponseHolder;
 import org.apache.druid.java.util.http.client.response.StringFullResponseHolder;
 import org.apache.druid.query.QueryRunnerFactoryConglomerate;
@@ -64,54 +71,58 @@ import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.aggregation.hyperloglog.HyperUniquesAggregatorFactory;
+import org.apache.druid.rpc.indexing.OverlordClient;
 import org.apache.druid.segment.IndexBuilder;
 import org.apache.druid.segment.QueryableIndex;
 import org.apache.druid.segment.TestHelper;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.RowSignature;
-import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.incremental.IncrementalIndexSchema;
 import org.apache.druid.segment.join.MapJoinableFactory;
-import org.apache.druid.segment.loading.SegmentLoader;
+import org.apache.druid.segment.loading.SegmentCacheManager;
+import org.apache.druid.segment.metadata.CentralizedDatasourceSchemaConfig;
 import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMediumFactory;
 import org.apache.druid.server.DruidNode;
 import org.apache.druid.server.QueryStackTests;
 import org.apache.druid.server.SegmentManager;
+import org.apache.druid.server.SpecificSegmentsQuerySegmentWalker;
 import org.apache.druid.server.coordination.DruidServerMetadata;
 import org.apache.druid.server.coordination.ServerType;
 import org.apache.druid.server.coordinator.BytesAccumulatingResponseHandler;
+import org.apache.druid.server.metrics.NoopServiceEmitter;
 import org.apache.druid.server.security.Access;
+import org.apache.druid.server.security.Action;
+import org.apache.druid.server.security.AuthenticationResult;
 import org.apache.druid.server.security.Authorizer;
 import org.apache.druid.server.security.AuthorizerMapper;
 import org.apache.druid.server.security.NoopEscalator;
-import org.apache.druid.sql.calcite.planner.PlannerConfig;
+import org.apache.druid.server.security.ResourceType;
+import org.apache.druid.sql.calcite.planner.CatalogResolver;
 import org.apache.druid.sql.calcite.schema.SystemSchema.SegmentsTable;
 import org.apache.druid.sql.calcite.table.RowSignatures;
 import org.apache.druid.sql.calcite.util.CalciteTestBase;
 import org.apache.druid.sql.calcite.util.CalciteTests;
-import org.apache.druid.sql.calcite.util.SpecificSegmentsQuerySegmentWalker;
-import org.apache.druid.sql.calcite.util.TestServerInventoryView;
+import org.apache.druid.sql.calcite.util.TestDataBuilder;
+import org.apache.druid.sql.calcite.util.TestTimelineServerView;
 import org.apache.druid.timeline.CompactionState;
 import org.apache.druid.timeline.DataSegment;
 import org.apache.druid.timeline.SegmentId;
-import org.apache.druid.timeline.SegmentWithOvershadowedStatus;
+import org.apache.druid.timeline.SegmentStatusInCluster;
 import org.apache.druid.timeline.partition.NumberedShardSpec;
 import org.easymock.EasyMock;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpMethod;
 import org.jboss.netty.handler.codec.http.HttpResponse;
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
-import org.jboss.netty.handler.codec.http.HttpVersion;
-import org.junit.AfterClass;
+import org.joda.time.DateTime;
 import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.URL;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -123,30 +134,30 @@ import java.util.Set;
 
 public class SystemSchemaTest extends CalciteTestBase
 {
-  private static final PlannerConfig PLANNER_CONFIG_DEFAULT = new PlannerConfig();
+  private static final BrokerSegmentMetadataCacheConfig SEGMENT_CACHE_CONFIG_DEFAULT = BrokerSegmentMetadataCacheConfig.create();
 
   private static final List<InputRow> ROWS1 = ImmutableList.of(
-      CalciteTests.createRow(ImmutableMap.of("t", "2000-01-01", "m1", "1.0", "dim1", "")),
-      CalciteTests.createRow(ImmutableMap.of("t", "2000-01-02", "m1", "2.0", "dim1", "10.1")),
-      CalciteTests.createRow(ImmutableMap.of("t", "2000-01-03", "m1", "3.0", "dim1", "2"))
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2000-01-01", "m1", "1.0", "dim1", "")),
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2000-01-02", "m1", "2.0", "dim1", "10.1")),
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2000-01-03", "m1", "3.0", "dim1", "2"))
   );
 
   private static final List<InputRow> ROWS2 = ImmutableList.of(
-      CalciteTests.createRow(ImmutableMap.of("t", "2001-01-01", "m1", "4.0", "dim2", ImmutableList.of("a"))),
-      CalciteTests.createRow(ImmutableMap.of("t", "2001-01-02", "m1", "5.0", "dim2", ImmutableList.of("abc"))),
-      CalciteTests.createRow(ImmutableMap.of("t", "2001-01-03", "m1", "6.0"))
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2001-01-01", "m1", "4.0", "dim2", ImmutableList.of("a"))),
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2001-01-02", "m1", "5.0", "dim2", ImmutableList.of("abc"))),
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2001-01-03", "m1", "6.0"))
   );
 
   private static final List<InputRow> ROWS3 = ImmutableList.of(
-      CalciteTests.createRow(ImmutableMap.of("t", "2001-01-01", "m1", "7.0", "dim3", ImmutableList.of("x"))),
-      CalciteTests.createRow(ImmutableMap.of("t", "2001-01-02", "m1", "8.0", "dim3", ImmutableList.of("xyz")))
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2001-01-01", "m1", "7.0", "dim3", ImmutableList.of("x"))),
+      TestDataBuilder.createRow(ImmutableMap.of("t", "2001-01-02", "m1", "8.0", "dim3", ImmutableList.of("xyz")))
   );
 
   private SystemSchema schema;
   private SpecificSegmentsQuerySegmentWalker walker;
   private DruidLeaderClient client;
   private DruidLeaderClient coordinatorClient;
-  private DruidLeaderClient overlordClient;
+  private OverlordClient overlordClient;
   private TimelineServerView serverView;
   private ObjectMapper mapper;
   private StringFullResponseHolder responseHolder;
@@ -158,31 +169,28 @@ public class SystemSchemaTest extends CalciteTestBase
   private static Closer resourceCloser;
   private MetadataSegmentView metadataView;
   private DruidNodeDiscoveryProvider druidNodeDiscoveryProvider;
-  private InventoryView serverInventoryView;
+  private FilteredServerInventoryView serverInventoryView;
 
-  @Rule
-  public TemporaryFolder temporaryFolder = new TemporaryFolder();
-
-  @BeforeClass
+  @BeforeAll
   public static void setUpClass()
   {
     resourceCloser = Closer.create();
     conglomerate = QueryStackTests.createQueryRunnerFactoryConglomerate(resourceCloser);
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDownClass() throws IOException
   {
     resourceCloser.close();
   }
 
-  @Before
-  public void setUp() throws Exception
+  @BeforeEach
+  public void setUp(@TempDir File tmpDir) throws Exception
   {
     serverView = EasyMock.createNiceMock(TimelineServerView.class);
     client = EasyMock.createMock(DruidLeaderClient.class);
     coordinatorClient = EasyMock.createMock(DruidLeaderClient.class);
-    overlordClient = EasyMock.createMock(DruidLeaderClient.class);
+    overlordClient = EasyMock.createMock(OverlordClient.class);
     mapper = TestHelper.makeJsonMapper();
     responseHolder = EasyMock.createMock(StringFullResponseHolder.class);
     responseHandler = EasyMock.createMockBuilder(BytesAccumulatingResponseHandler.class)
@@ -195,16 +203,8 @@ public class SystemSchemaTest extends CalciteTestBase
                               .addMockedMethod("getStatus")
                               .createMock();
     request = EasyMock.createMock(Request.class);
-    authMapper = new AuthorizerMapper(null)
-    {
-      @Override
-      public Authorizer getAuthorizer(String name)
-      {
-        return (authenticationResult, resource, action) -> new Access(true);
-      }
-    };
+    authMapper = createAuthMapper();
 
-    final File tmpDir = temporaryFolder.newFolder();
     final QueryableIndex index1 = IndexBuilder.create()
                                               .tmpDir(new File(tmpDir, "1"))
                                               .segmentWriteOutMediumFactory(OffHeapMemorySegmentWriteOutMediumFactory.instance())
@@ -244,24 +244,31 @@ public class SystemSchemaTest extends CalciteTestBase
                                               .rows(ROWS3)
                                               .buildMMappedIndex();
 
-    walker = new SpecificSegmentsQuerySegmentWalker(conglomerate)
+    walker = SpecificSegmentsQuerySegmentWalker.createWalker(conglomerate)
         .add(segment1, index1)
         .add(segment2, index2)
         .add(segment3, index3);
 
-    druidSchema = new DruidSchema(
+    BrokerSegmentMetadataCache cache = new BrokerSegmentMetadataCache(
         CalciteTests.createMockQueryLifecycleFactory(walker, conglomerate),
-        new TestServerInventoryView(walker.getSegments(), realtimeSegments),
-        new SegmentManager(EasyMock.createMock(SegmentLoader.class)),
-        new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()),
-        PLANNER_CONFIG_DEFAULT,
-        new NoopEscalator()
+        new TestTimelineServerView(walker.getSegments(), realtimeSegments),
+        SEGMENT_CACHE_CONFIG_DEFAULT,
+        new NoopEscalator(),
+        new InternalQueryConfig(),
+        new NoopServiceEmitter(),
+        new PhysicalDatasourceMetadataFactory(
+            new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()),
+            new SegmentManager(EasyMock.createMock(SegmentCacheManager.class))
+        ),
+        new NoopCoordinatorClient(),
+        CentralizedDatasourceSchemaConfig.create()
     );
-    druidSchema.start();
-    druidSchema.awaitInitialization();
+    cache.start();
+    cache.awaitInitialization();
+    druidSchema = new DruidSchema(cache, null, CatalogResolver.NULL_RESOLVER);
     metadataView = EasyMock.createMock(MetadataSegmentView.class);
     druidNodeDiscoveryProvider = EasyMock.createMock(DruidNodeDiscoveryProvider.class);
-    serverInventoryView = EasyMock.createMock(ServerInventoryView.class);
+    serverInventoryView = EasyMock.createMock(FilteredServerInventoryView.class);
     schema = new SystemSchema(
         druidSchema,
         metadataView,
@@ -269,7 +276,7 @@ public class SystemSchemaTest extends CalciteTestBase
         serverInventoryView,
         EasyMock.createStrictMock(AuthorizerMapper.class),
         client,
-        client,
+        overlordClient,
         druidNodeDiscoveryProvider,
         mapper
     );
@@ -277,6 +284,9 @@ public class SystemSchemaTest extends CalciteTestBase
 
   private final CompactionState expectedCompactionState = new CompactionState(
       new DynamicPartitionsSpec(null, null),
+      null,
+      null,
+      null,
       Collections.singletonMap("test", "map"),
       Collections.singletonMap("test2", "map2")
   );
@@ -376,40 +386,48 @@ public class SystemSchemaTest extends CalciteTestBase
 
   final List<DataSegment> realtimeSegments = ImmutableList.of(segment2, segment4, segment5);
 
+  private final DateTime startTime = DateTimes.nowUtc();
+
   private final DiscoveryDruidNode coordinator = new DiscoveryDruidNode(
       new DruidNode("s1", "localhost", false, 8081, null, true, false),
       NodeRole.COORDINATOR,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode coordinator2 = new DiscoveryDruidNode(
       new DruidNode("s1", "localhost", false, 8181, null, true, false),
       NodeRole.COORDINATOR,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode overlord = new DiscoveryDruidNode(
       new DruidNode("s2", "localhost", false, 8090, null, true, false),
       NodeRole.OVERLORD,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode overlord2 = new DiscoveryDruidNode(
       new DruidNode("s2", "localhost", false, 8190, null, true, false),
       NodeRole.OVERLORD,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode broker1 = new DiscoveryDruidNode(
       new DruidNode("s3", "localhost", false, 8082, null, true, false),
       NodeRole.BROKER,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode broker2 = new DiscoveryDruidNode(
       new DruidNode("s3", "brokerHost", false, 8082, null, true, false),
       NodeRole.BROKER,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode brokerWithBroadcastSegments = new DiscoveryDruidNode(
@@ -417,13 +435,15 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.BROKER,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.BROKER, 0)
-      )
+      ),
+      startTime
   );
 
   private final DiscoveryDruidNode router = new DiscoveryDruidNode(
       new DruidNode("s4", "localhost", false, 8888, null, true, false),
       NodeRole.ROUTER,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode historical1 = new DiscoveryDruidNode(
@@ -431,7 +451,8 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.HISTORICAL,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.HISTORICAL, 0)
-      )
+      ),
+      startTime
   );
 
   private final DiscoveryDruidNode historical2 = new DiscoveryDruidNode(
@@ -439,7 +460,8 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.HISTORICAL,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.HISTORICAL, 0)
-      )
+      ),
+      startTime
   );
 
   private final DiscoveryDruidNode lameHistorical = new DiscoveryDruidNode(
@@ -447,13 +469,15 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.HISTORICAL,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.HISTORICAL, 0)
-      )
+      ),
+      startTime
   );
 
   private final DiscoveryDruidNode middleManager = new DiscoveryDruidNode(
       new DruidNode("s6", "mmHost", false, 8091, null, true, false),
       NodeRole.MIDDLE_MANAGER,
-      ImmutableMap.of()
+      ImmutableMap.of(),
+      startTime
   );
 
   private final DiscoveryDruidNode peon1 = new DiscoveryDruidNode(
@@ -461,7 +485,8 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.PEON,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.INDEXER_EXECUTOR, 0)
-      )
+      ),
+      startTime
   );
 
   private final DiscoveryDruidNode peon2 = new DiscoveryDruidNode(
@@ -469,7 +494,8 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.PEON,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.INDEXER_EXECUTOR, 0)
-      )
+      ),
+      startTime
   );
 
   private final DiscoveryDruidNode indexer = new DiscoveryDruidNode(
@@ -477,7 +503,8 @@ public class SystemSchemaTest extends CalciteTestBase
       NodeRole.INDEXER,
       ImmutableMap.of(
           DataNodeService.DISCOVERY_SERVICE_KEY, new DataNodeService("tier", 1000, ServerType.INDEXER_EXECUTOR, 0)
-      )
+      ),
+      startTime
   );
 
   private final ImmutableDruidServer druidServer1 = new ImmutableDruidServer(
@@ -519,7 +546,7 @@ public class SystemSchemaTest extends CalciteTestBase
     final RelDataType rowType = segmentsTable.getRowType(new JavaTypeFactoryImpl());
     final List<RelDataTypeField> fields = rowType.getFieldList();
 
-    Assert.assertEquals(17, fields.size());
+    Assert.assertEquals(19, fields.size());
 
     final SystemSchema.TasksTable tasksTable = (SystemSchema.TasksTable) schema.getTableMap().get("tasks");
     final RelDataType sysRowType = tasksTable.getRowType(new JavaTypeFactoryImpl());
@@ -532,7 +559,7 @@ public class SystemSchemaTest extends CalciteTestBase
     final SystemSchema.ServersTable serversTable = (SystemSchema.ServersTable) schema.getTableMap().get("servers");
     final RelDataType serverRowType = serversTable.getRowType(new JavaTypeFactoryImpl());
     final List<RelDataTypeField> serverFields = serverRowType.getFieldList();
-    Assert.assertEquals(9, serverFields.size());
+    Assert.assertEquals(10, serverFields.size());
     Assert.assertEquals("server", serverFields.get(0).getName());
     Assert.assertEquals(SqlTypeName.VARCHAR, serverFields.get(0).getType().getSqlTypeName());
   }
@@ -541,45 +568,19 @@ public class SystemSchemaTest extends CalciteTestBase
   public void testSegmentsTable() throws Exception
   {
     final SegmentsTable segmentsTable = new SegmentsTable(druidSchema, metadataView, new ObjectMapper(), authMapper);
-    final Set<SegmentWithOvershadowedStatus> publishedSegments = new HashSet<>(Arrays.asList(
-        new SegmentWithOvershadowedStatus(publishedCompactedSegment1, true),
-        new SegmentWithOvershadowedStatus(publishedCompactedSegment2, false),
-        new SegmentWithOvershadowedStatus(publishedUncompactedSegment3, false),
-        new SegmentWithOvershadowedStatus(segment1, true),
-        new SegmentWithOvershadowedStatus(segment2, false)
+    final Set<SegmentStatusInCluster> publishedSegments = new HashSet<>(Arrays.asList(
+        new SegmentStatusInCluster(publishedCompactedSegment1, true, 2, null, false),
+        new SegmentStatusInCluster(publishedCompactedSegment2, false, 0, null, false),
+        new SegmentStatusInCluster(publishedUncompactedSegment3, false, 2, null, false),
+        new SegmentStatusInCluster(segment1, true, 2, null, false),
+        new SegmentStatusInCluster(segment2, false, 0, null, false)
     ));
 
-    EasyMock.expect(metadataView.getPublishedSegments()).andReturn(publishedSegments.iterator()).once();
+    EasyMock.expect(metadataView.getSegments()).andReturn(publishedSegments.iterator()).once();
 
     EasyMock.replay(client, request, responseHolder, responseHandler, metadataView);
-    DataContext dataContext = new DataContext()
-    {
-      @Override
-      public SchemaPlus getRootSchema()
-      {
-        return null;
-      }
-
-      @Override
-      public JavaTypeFactory getTypeFactory()
-      {
-        return null;
-      }
-
-      @Override
-      public QueryProvider getQueryProvider()
-      {
-        return null;
-      }
-
-      @Override
-      public Object get(String name)
-      {
-        return CalciteTests.SUPER_USER_AUTH_RESULT;
-      }
-    };
-
-    final List<Object[]> rows = segmentsTable.scan(dataContext).toList();
+    DataContext dataContext = createDataContext(Users.SUPER);
+    final List<Object[]> rows = segmentsTable.scan(dataContext, Collections.emptyList(), null).toList();
     rows.sort((Object[] row1, Object[] row2) -> ((Comparable) row1[0]).compareTo(row2[0]));
 
     // total segments = 8
@@ -601,7 +602,8 @@ public class SystemSchemaTest extends CalciteTestBase
         1L, //is_available
         0L, //is_realtime
         1L, //is_overshadowed
-        null //is_compacted
+        null, //is_compacted
+        2L  // replication_factor
     );
 
     verifyRow(
@@ -615,7 +617,8 @@ public class SystemSchemaTest extends CalciteTestBase
         1L, //is_available
         0L, //is_realtime
         0L, //is_overshadowed,
-        null //is_compacted
+        null, //is_compacted
+        0L  // replication_factor
     );
 
     //segment test3 is unpublished and has a NumberedShardSpec with partitionNum = 2
@@ -630,7 +633,8 @@ public class SystemSchemaTest extends CalciteTestBase
         1L, //is_available
         0L, //is_realtime
         0L, //is_overshadowed
-        null //is_compacted
+        null, //is_compacted
+        -1L   // replication_factor
     );
 
     verifyRow(
@@ -644,7 +648,8 @@ public class SystemSchemaTest extends CalciteTestBase
         1L, //is_available
         1L, //is_realtime
         0L, //is_overshadowed
-        null //is_compacted
+        null, //is_compacted
+        -1L  // replication_factor
     );
 
     verifyRow(
@@ -658,7 +663,8 @@ public class SystemSchemaTest extends CalciteTestBase
         1L, //is_available
         1L, //is_realtime
         0L, //is_overshadowed
-        null //is_compacted
+        null, //is_compacted
+        -1L  // replication_factor
     );
 
     // wikipedia segments are published and unavailable, num_replicas is 0
@@ -674,7 +680,8 @@ public class SystemSchemaTest extends CalciteTestBase
         0L, //is_available
         0L, //is_realtime
         1L, //is_overshadowed
-        expectedCompactionState //is_compacted
+        expectedCompactionState, //is_compacted
+        2L  // replication_factor
     );
 
     verifyRow(
@@ -688,7 +695,8 @@ public class SystemSchemaTest extends CalciteTestBase
         0L, //is_available
         0L, //is_realtime
         0L, //is_overshadowed
-        expectedCompactionState //is_compacted
+        expectedCompactionState, //is_compacted
+        0L  // replication_factor
     );
 
     verifyRow(
@@ -702,11 +710,80 @@ public class SystemSchemaTest extends CalciteTestBase
         0L, //is_available
         0L, //is_realtime
         0L, //is_overshadowed
-        null //is_compacted
+        null, //is_compacted
+        2L  // replication_factor
     );
 
     // Verify value types.
     verifyTypes(rows, SystemSchema.SEGMENTS_SIGNATURE);
+  }
+
+  @Test
+  public void testSegmentsTableWithProjection() throws JsonProcessingException
+  {
+    final SegmentsTable segmentsTable = new SegmentsTable(druidSchema, metadataView, new ObjectMapper(), authMapper);
+    final Set<SegmentStatusInCluster> publishedSegments = new HashSet<>(Arrays.asList(
+        new SegmentStatusInCluster(publishedCompactedSegment1, true, 2, null, false),
+        new SegmentStatusInCluster(publishedCompactedSegment2, false, 0, null, false),
+        new SegmentStatusInCluster(publishedUncompactedSegment3, false, 2, null, false),
+        new SegmentStatusInCluster(segment1, true, 2, null, false),
+        new SegmentStatusInCluster(segment2, false, 0, null, false)
+    ));
+
+    EasyMock.expect(metadataView.getSegments()).andReturn(publishedSegments.iterator()).once();
+
+    EasyMock.replay(client, request, responseHolder, responseHandler, metadataView);
+    DataContext dataContext = createDataContext(Users.SUPER);
+    final List<Object[]> rows = segmentsTable.scan(
+        dataContext,
+        Collections.emptyList(),
+        new int[]{
+            SystemSchema.SEGMENTS_SIGNATURE.indexOf("last_compaction_state"),
+            SystemSchema.SEGMENTS_SIGNATURE.indexOf("segment_id")
+        }
+    ).toList();
+    rows.sort((Object[] row1, Object[] row2) -> ((Comparable) row1[1]).compareTo(row2[1]));
+
+    // total segments = 8
+    // segments test1, test2  are published and available
+    // segment test3 is served by historical but unpublished or unused
+    // segments test4, test5 are not published but available (realtime segments)
+    // segment test2 is both published and served by a realtime server.
+
+    Assert.assertEquals(8, rows.size());
+
+    Assert.assertNull(null, rows.get(0)[0]);
+    Assert.assertEquals("test1_2010-01-01T00:00:00.000Z_2011-01-01T00:00:00.000Z_version1", rows.get(0)[1]);
+
+    Assert.assertNull(null, rows.get(1)[0]);
+    Assert.assertEquals("test2_2011-01-01T00:00:00.000Z_2012-01-01T00:00:00.000Z_version2", rows.get(1)[1]);
+
+    Assert.assertNull(null, rows.get(2)[0]);
+    Assert.assertEquals("test3_2012-01-01T00:00:00.000Z_2013-01-01T00:00:00.000Z_version3_2", rows.get(2)[1]);
+
+    Assert.assertNull(null, rows.get(3)[0]);
+    Assert.assertEquals("test4_2014-01-01T00:00:00.000Z_2015-01-01T00:00:00.000Z_version4", rows.get(3)[1]);
+
+    Assert.assertNull(null, rows.get(4)[0]);
+    Assert.assertEquals("test5_2015-01-01T00:00:00.000Z_2016-01-01T00:00:00.000Z_version5", rows.get(4)[1]);
+
+    Assert.assertEquals(mapper.writeValueAsString(expectedCompactionState), rows.get(5)[0]);
+    Assert.assertEquals("wikipedia1_2007-01-01T00:00:00.000Z_2008-01-01T00:00:00.000Z_version1", rows.get(5)[1]);
+
+    Assert.assertEquals(mapper.writeValueAsString(expectedCompactionState), rows.get(6)[0]);
+    Assert.assertEquals("wikipedia2_2008-01-01T00:00:00.000Z_2009-01-01T00:00:00.000Z_version2", rows.get(6)[1]);
+
+    Assert.assertNull(null, rows.get(7)[0]);
+    Assert.assertEquals("wikipedia3_2009-01-01T00:00:00.000Z_2010-01-01T00:00:00.000Z_version3", rows.get(7)[1]);
+
+    // Verify value types.
+    verifyTypes(
+        rows,
+        RowSignature.builder()
+                    .add("last_compaction_state", ColumnType.STRING)
+                    .add("segment_id", ColumnType.STRING)
+                    .build()
+    );
   }
 
   private void verifyRow(
@@ -720,7 +797,8 @@ public class SystemSchemaTest extends CalciteTestBase
       long isAvailable,
       long isRealtime,
       long isOvershadowed,
-      CompactionState compactionState
+      CompactionState compactionState,
+      long replicationFactor
   ) throws Exception
   {
     Assert.assertEquals(segmentId, row[0].toString());
@@ -733,19 +811,21 @@ public class SystemSchemaTest extends CalciteTestBase
     Assert.assertEquals(partitionNum, row[6]);
     Assert.assertEquals(numReplicas, row[7]);
     Assert.assertEquals(numRows, row[8]);
-    Assert.assertEquals(isPublished, row[9]);
-    Assert.assertEquals(isAvailable, row[10]);
-    Assert.assertEquals(isRealtime, row[11]);
-    Assert.assertEquals(isOvershadowed, row[12]);
+    Assert.assertEquals((((isPublished == 1) && (isOvershadowed == 0)) || (isRealtime == 1)) ? 1L : 0L, row[9]);
+    Assert.assertEquals(isPublished, row[10]);
+    Assert.assertEquals(isAvailable, row[11]);
+    Assert.assertEquals(isRealtime, row[12]);
+    Assert.assertEquals(isOvershadowed, row[13]);
     if (compactionState == null) {
-      Assert.assertNull(row[16]);
+      Assert.assertNull(row[17]);
     } else {
-      Assert.assertEquals(mapper.writeValueAsString(compactionState), row[16]);
+      Assert.assertEquals(mapper.writeValueAsString(compactionState), row[17]);
     }
+    Assert.assertEquals(replicationFactor, row[18]);
   }
 
   @Test
-  public void testServersTable()
+  public void testServersTable() throws URISyntaxException
   {
 
     SystemSchema.ServersTable serversTable = EasyMock.createMockBuilder(SystemSchema.ServersTable.class)
@@ -801,7 +881,8 @@ public class SystemSchemaTest extends CalciteTestBase
     EasyMock.expect(indexerNodeDiscovery.getAllNodes()).andReturn(ImmutableList.of(indexer)).once();
 
     EasyMock.expect(coordinatorClient.findCurrentLeader()).andReturn(coordinator.getDruidNode().getHostAndPortToUse()).once();
-    EasyMock.expect(overlordClient.findCurrentLeader()).andReturn(overlord.getDruidNode().getHostAndPortToUse()).once();
+    EasyMock.expect(overlordClient.findCurrentLeader())
+            .andReturn(Futures.immediateFuture(new URI(overlord.getDruidNode().getHostAndPortToUse()))).once();
 
     final List<DruidServer> servers = new ArrayList<>();
     servers.add(mockDataServer(historical1.getDruidNode().getHostAndPortToUse(), 200L, 1000L, "tier"));
@@ -829,38 +910,13 @@ public class SystemSchemaTest extends CalciteTestBase
         indexerNodeDiscovery
     );
 
-    DataContext dataContext = new DataContext()
-    {
-      @Override
-      public SchemaPlus getRootSchema()
-      {
-        return null;
-      }
-
-      @Override
-      public JavaTypeFactory getTypeFactory()
-      {
-        return null;
-      }
-
-      @Override
-      public QueryProvider getQueryProvider()
-      {
-        return null;
-      }
-
-      @Override
-      public Object get(String name)
-      {
-        return CalciteTests.SUPER_USER_AUTH_RESULT;
-      }
-    };
-
+    DataContext dataContext = createDataContext(Users.SUPER);
     final List<Object[]> rows = serversTable.scan(dataContext).toList();
     rows.sort((Object[] row1, Object[] row2) -> ((Comparable) row1[0]).compareTo(row2[0]));
 
     final List<Object[]> expectedRows = new ArrayList<>();
     final Long nonLeader = NullHandling.defaultLongValue();
+    final String startTimeStr = startTime.toString();
     expectedRows.add(
         createExpectedRow(
             "brokerHost:8082",
@@ -871,7 +927,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -884,7 +941,8 @@ public class SystemSchemaTest extends CalciteTestBase
             "tier",
             0L,
             1000L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -897,7 +955,8 @@ public class SystemSchemaTest extends CalciteTestBase
             "tier",
             400L,
             1000L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -910,7 +969,8 @@ public class SystemSchemaTest extends CalciteTestBase
             "tier",
             0L,
             1000L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -923,7 +983,8 @@ public class SystemSchemaTest extends CalciteTestBase
             "tier",
             0L,
             1000L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(createExpectedRow(
@@ -935,7 +996,8 @@ public class SystemSchemaTest extends CalciteTestBase
         "tier",
         0L,
         1000L,
-        nonLeader
+        nonLeader,
+        startTimeStr
     ));
     expectedRows.add(
         createExpectedRow(
@@ -947,7 +1009,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            1L
+            1L,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -960,7 +1023,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -973,7 +1037,8 @@ public class SystemSchemaTest extends CalciteTestBase
             "tier",
             200L,
             1000L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -986,7 +1051,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            1L
+            1L,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -999,7 +1065,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            0L
+            0L,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -1012,7 +1079,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            0L
+            0L,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -1025,7 +1093,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(
@@ -1038,7 +1107,8 @@ public class SystemSchemaTest extends CalciteTestBase
             null,
             0L,
             0L,
-            nonLeader
+            nonLeader,
+            startTimeStr
         )
     );
     expectedRows.add(createExpectedRow(
@@ -1050,7 +1120,8 @@ public class SystemSchemaTest extends CalciteTestBase
         "tier",
         0L,
         1000L,
-        nonLeader
+        nonLeader,
+        startTimeStr
     ));
     Assert.assertEquals(expectedRows.size(), rows.size());
     for (int i = 0; i < rows.size(); i++) {
@@ -1082,7 +1153,8 @@ public class SystemSchemaTest extends CalciteTestBase
       @Nullable String tier,
       @Nullable Long currSize,
       @Nullable Long maxSize,
-      @Nullable Long isLeader
+      @Nullable Long isLeader,
+      String startTime
   )
   {
     return new Object[]{
@@ -1094,7 +1166,8 @@ public class SystemSchemaTest extends CalciteTestBase
         tier,
         currSize,
         maxSize,
-        isLeader
+        isLeader,
+        startTime
     };
   }
 
@@ -1110,32 +1183,7 @@ public class SystemSchemaTest extends CalciteTestBase
             .andReturn(immutableDruidServers)
             .once();
     EasyMock.replay(serverView);
-    DataContext dataContext = new DataContext()
-    {
-      @Override
-      public SchemaPlus getRootSchema()
-      {
-        return null;
-      }
-
-      @Override
-      public JavaTypeFactory getTypeFactory()
-      {
-        return null;
-      }
-
-      @Override
-      public QueryProvider getQueryProvider()
-      {
-        return null;
-      }
-
-      @Override
-      public Object get(String name)
-      {
-        return CalciteTests.SUPER_USER_AUTH_RESULT;
-      }
-    };
+    DataContext dataContext = createDataContext(Users.SUPER);
 
     //server_segments table is the join of servers and segments table
     // it will have 5 rows as follows
@@ -1177,18 +1225,10 @@ public class SystemSchemaTest extends CalciteTestBase
   {
 
     SystemSchema.TasksTable tasksTable = EasyMock.createMockBuilder(SystemSchema.TasksTable.class)
-                                                 .withConstructor(client, mapper, authMapper)
+                                                 .withConstructor(overlordClient, authMapper)
                                                  .createMock();
 
     EasyMock.replay(tasksTable);
-    EasyMock.expect(client.makeRequest(HttpMethod.GET, "/druid/indexer/v1/tasks")).andReturn(request).anyTimes();
-
-
-    HttpResponse httpResp = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-    InputStreamFullResponseHolder responseHolder = new InputStreamFullResponseHolder(httpResp.getStatus(), httpResp);
-
-    EasyMock.expect(client.go(EasyMock.eq(request), EasyMock.anyObject(InputStreamFullResponseHandler.class))).andReturn(responseHolder).once();
-    EasyMock.expect(request.getUrl()).andReturn(new URL("http://test-host:1234/druid/indexer/v1/tasks")).anyTimes();
 
     String json = "[{\n"
                   + "\t\"id\": \"index_wikipedia_2018-09-20T22:33:44.911Z\",\n"
@@ -1223,37 +1263,17 @@ public class SystemSchemaTest extends CalciteTestBase
                   + "\t\"dataSource\": \"wikipedia\",\n"
                   + "\t\"errorMsg\": null\n"
                   + "}]";
-    byte[] bytesToWrite = json.getBytes(StandardCharsets.UTF_8);
-    responseHolder.addChunk(bytesToWrite);
-    responseHolder.done();
 
-    EasyMock.replay(client, request, responseHandler);
-    DataContext dataContext = new DataContext()
-    {
-      @Override
-      public SchemaPlus getRootSchema()
-      {
-        return null;
-      }
+    EasyMock.expect(overlordClient.taskStatuses(null, null, null)).andReturn(
+        Futures.immediateFuture(
+            CloseableIterators.withEmptyBaggage(
+                mapper.readValue(json, new TypeReference<List<TaskStatusPlus>>() {}).iterator()
+            )
+        )
+    );
 
-      @Override
-      public JavaTypeFactory getTypeFactory()
-      {
-        return null;
-      }
-
-      @Override
-      public QueryProvider getQueryProvider()
-      {
-        return null;
-      }
-
-      @Override
-      public Object get(String name)
-      {
-        return CalciteTests.SUPER_USER_AUTH_RESULT;
-      }
-    };
+    EasyMock.replay(overlordClient, request, responseHandler);
+    DataContext dataContext = createDataContext(Users.SUPER);
     final List<Object[]> rows = tasksTable.scan(dataContext).toList();
 
     Object[] row0 = rows.get(0);
@@ -1293,30 +1313,81 @@ public class SystemSchemaTest extends CalciteTestBase
   }
 
   @Test
+  public void testTasksTableAuth()
+  {
+    SystemSchema.TasksTable tasksTable = new SystemSchema.TasksTable(overlordClient, authMapper);
+
+    String json = "[{\n"
+                  + "\t\"id\": \"index_wikipedia_2018-09-20T22:33:44.911Z\",\n"
+                  + "\t\"groupId\": \"group_index_wikipedia_2018-09-20T22:33:44.911Z\",\n"
+                  + "\t\"type\": \"index\",\n"
+                  + "\t\"createdTime\": \"2018-09-20T22:33:44.922Z\",\n"
+                  + "\t\"queueInsertionTime\": \"1970-01-01T00:00:00.000Z\",\n"
+                  + "\t\"statusCode\": \"FAILED\",\n"
+                  + "\t\"runnerStatusCode\": \"NONE\",\n"
+                  + "\t\"duration\": -1,\n"
+                  + "\t\"location\": {\n"
+                  + "\t\t\"host\": \"testHost\",\n"
+                  + "\t\t\"port\": 1234,\n"
+                  + "\t\t\"tlsPort\": -1\n"
+                  + "\t},\n"
+                  + "\t\"dataSource\": \"wikipedia\",\n"
+                  + "\t\"errorMsg\": null\n"
+                  + "}, {\n"
+                  + "\t\"id\": \"index_wikipedia_2018-09-21T18:38:47.773Z\",\n"
+                  + "\t\"groupId\": \"group_index_wikipedia_2018-09-21T18:38:47.773Z\",\n"
+                  + "\t\"type\": \"index\",\n"
+                  + "\t\"createdTime\": \"2018-09-21T18:38:47.873Z\",\n"
+                  + "\t\"queueInsertionTime\": \"2018-09-21T18:38:47.910Z\",\n"
+                  + "\t\"statusCode\": \"RUNNING\",\n"
+                  + "\t\"runnerStatusCode\": \"RUNNING\",\n"
+                  + "\t\"duration\": null,\n"
+                  + "\t\"location\": {\n"
+                  + "\t\t\"host\": \"192.168.1.6\",\n"
+                  + "\t\t\"port\": 8100,\n"
+                  + "\t\t\"tlsPort\": -1\n"
+                  + "\t},\n"
+                  + "\t\"dataSource\": \"wikipedia\",\n"
+                  + "\t\"errorMsg\": null\n"
+                  + "}]";
+
+    EasyMock.expect(overlordClient.taskStatuses(null, null, null)).andAnswer(
+        () -> Futures.immediateFuture(
+            CloseableIterators.withEmptyBaggage(
+                mapper.readValue(json, new TypeReference<List<TaskStatusPlus>>() {}).iterator()
+            )
+        )
+    ).anyTimes();
+
+    EasyMock.replay(overlordClient);
+
+    // Verify that no row is returned for Datasource Write user
+    List<Object[]> rows = tasksTable
+        .scan(createDataContext(Users.DATASOURCE_WRITE))
+        .toList();
+    Assert.assertTrue(rows.isEmpty());
+
+    // Verify that 2 rows are returned for Datasource Read user
+    rows = tasksTable
+        .scan(createDataContext(Users.DATASOURCE_READ))
+        .toList();
+    Assert.assertEquals(2, rows.size());
+
+    // Verify that 2 rows are returned for Super user
+    rows = tasksTable
+        .scan(createDataContext(Users.SUPER))
+        .toList();
+    Assert.assertEquals(2, rows.size());
+  }
+
+  @Test
   public void testSupervisorTable() throws Exception
   {
-
-    SystemSchema.SupervisorsTable supervisorTable = EasyMock.createMockBuilder(SystemSchema.SupervisorsTable.class)
-                                                            .withConstructor(
-                                                                client,
-                                                                mapper,
-                                                                authMapper
-                                                            )
-                                                            .createMock();
+    SystemSchema.SupervisorsTable supervisorTable =
+        EasyMock.createMockBuilder(SystemSchema.SupervisorsTable.class)
+                .withConstructor(overlordClient, authMapper)
+                .createMock();
     EasyMock.replay(supervisorTable);
-    EasyMock.expect(client.makeRequest(HttpMethod.GET, "/druid/indexer/v1/supervisor?system"))
-            .andReturn(request)
-            .anyTimes();
-
-    HttpResponse httpResp = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-    InputStreamFullResponseHolder responseHolder = new InputStreamFullResponseHolder(httpResp.getStatus(), httpResp);
-
-    EasyMock.expect(client.go(EasyMock.eq(request), EasyMock.anyObject(InputStreamFullResponseHandler.class))).andReturn(responseHolder).once();
-
-    EasyMock.expect(responseHandler.getStatus()).andReturn(httpResp.getStatus().getCode()).anyTimes();
-    EasyMock.expect(request.getUrl())
-            .andReturn(new URL("http://test-host:1234/druid/indexer/v1/supervisor?system"))
-            .anyTimes();
 
     String json = "[{\n"
                   + "\t\"id\": \"wikipedia\",\n"
@@ -1330,12 +1401,110 @@ public class SystemSchemaTest extends CalciteTestBase
                   + "\t\"suspended\": false\n"
                   + "}]";
 
+    EasyMock.expect(overlordClient.supervisorStatuses()).andReturn(
+        Futures.immediateFuture(
+            CloseableIterators.withEmptyBaggage(
+                mapper.readValue(json, new TypeReference<List<SupervisorStatus>>() {}).iterator()
+            )
+        )
+    );
+
+    EasyMock.replay(overlordClient);
+    DataContext dataContext = createDataContext(Users.SUPER);
+    final List<Object[]> rows = supervisorTable.scan(dataContext).toList();
+
+    Object[] row0 = rows.get(0);
+    Assert.assertEquals("wikipedia", row0[0].toString());
+    Assert.assertEquals("UNHEALTHY_SUPERVISOR", row0[1].toString());
+    Assert.assertEquals("UNABLE_TO_CONNECT_TO_STREAM", row0[2].toString());
+    Assert.assertEquals(0L, row0[3]);
+    Assert.assertEquals("kafka", row0[4].toString());
+    Assert.assertEquals("wikipedia", row0[5].toString());
+    Assert.assertEquals(0L, row0[6]);
+    Assert.assertEquals(
+        "{\"type\":\"kafka\",\"dataSchema\":{\"dataSource\":\"wikipedia\"},\"context\":null,\"suspended\":false}",
+        row0[7].toString()
+    );
+
+    // Verify value types.
+    verifyTypes(rows, SystemSchema.SUPERVISOR_SIGNATURE);
+  }
+
+  @Test
+  public void testSupervisorTableAuth()
+  {
+    SystemSchema.SupervisorsTable supervisorTable =
+        new SystemSchema.SupervisorsTable(overlordClient, createAuthMapper());
+
+    final String json = "[{\n"
+                  + "\t\"id\": \"wikipedia\",\n"
+                  + "\t\"state\": \"UNHEALTHY_SUPERVISOR\",\n"
+                  + "\t\"detailedState\": \"UNABLE_TO_CONNECT_TO_STREAM\",\n"
+                  + "\t\"healthy\": false,\n"
+                  + "\t\"specString\": \"{\\\"type\\\":\\\"kafka\\\",\\\"dataSchema\\\":{\\\"dataSource\\\":\\\"wikipedia\\\"}"
+                  + ",\\\"context\\\":null,\\\"suspended\\\":false}\",\n"
+                  + "\t\"type\": \"kafka\",\n"
+                  + "\t\"source\": \"wikipedia\",\n"
+                  + "\t\"suspended\": false\n"
+                  + "}]";
+
+    EasyMock.expect(overlordClient.supervisorStatuses()).andAnswer(
+        () -> Futures.immediateFuture(
+            CloseableIterators.withEmptyBaggage(
+                mapper.readValue(json, new TypeReference<List<SupervisorStatus>>() {}).iterator()
+            )
+        )
+    ).anyTimes();
+
+    EasyMock.replay(overlordClient);
+
+    // Verify that no row is returned for Datasource Write user
+    List<Object[]> rows = supervisorTable
+        .scan(createDataContext(Users.DATASOURCE_WRITE))
+        .toList();
+    Assert.assertTrue(rows.isEmpty());
+
+    // Verify that 1 row is returned for Datasource Write user
+    rows = supervisorTable
+        .scan(createDataContext(Users.DATASOURCE_READ))
+        .toList();
+    Assert.assertEquals(1, rows.size());
+
+    // Verify that 1 row is returned for Super user
+    rows = supervisorTable
+        .scan(createDataContext(Users.SUPER))
+        .toList();
+    Assert.assertEquals(1, rows.size());
+
+    // TODO: If needed, verify the first row here
+
+    // TODO: Verify value types.
+    // verifyTypes(rows, SystemSchema.SUPERVISOR_SIGNATURE);
+  }
+
+  /**
+   * Creates a response holder that contains the given json.
+   */
+  private InputStreamFullResponseHolder createFullResponseHolder(
+      HttpResponse httpResponse,
+      String json
+  )
+  {
+    InputStreamFullResponseHolder responseHolder = new InputStreamFullResponseHolder(httpResponse);
+
     byte[] bytesToWrite = json.getBytes(StandardCharsets.UTF_8);
     responseHolder.addChunk(bytesToWrite);
     responseHolder.done();
 
-    EasyMock.replay(client, request, responseHandler);
-    DataContext dataContext = new DataContext()
+    return responseHolder;
+  }
+
+  /**
+   * Creates a DataContext for the given username.
+   */
+  private DataContext createDataContext(String username)
+  {
+    return new DataContext()
     {
       @Override
       public SchemaPlus getRootSchema()
@@ -1356,28 +1525,40 @@ public class SystemSchemaTest extends CalciteTestBase
       }
 
       @Override
-      public Object get(String name)
+      public Object get(String authorizerName)
       {
-        return CalciteTests.SUPER_USER_AUTH_RESULT;
+        return CalciteTests.TEST_SUPERUSER_NAME.equals(username)
+               ? CalciteTests.SUPER_USER_AUTH_RESULT
+               : new AuthenticationResult(username, authorizerName, null, null);
       }
     };
-    final List<Object[]> rows = supervisorTable.scan(dataContext).toList();
+  }
 
-    Object[] row0 = rows.get(0);
-    Assert.assertEquals("wikipedia", row0[0].toString());
-    Assert.assertEquals("UNHEALTHY_SUPERVISOR", row0[1].toString());
-    Assert.assertEquals("UNABLE_TO_CONNECT_TO_STREAM", row0[2].toString());
-    Assert.assertEquals(0L, row0[3]);
-    Assert.assertEquals("kafka", row0[4].toString());
-    Assert.assertEquals("wikipedia", row0[5].toString());
-    Assert.assertEquals(0L, row0[6]);
-    Assert.assertEquals(
-        "{\"type\":\"kafka\",\"dataSchema\":{\"dataSource\":\"wikipedia\"},\"context\":null,\"suspended\":false}",
-        row0[7].toString()
-    );
+  private AuthorizerMapper createAuthMapper()
+  {
+    return new AuthorizerMapper(null)
+    {
+      @Override
+      public Authorizer getAuthorizer(String name)
+      {
+        return (authenticationResult, resource, action) -> {
+          final String username = authenticationResult.getIdentity();
 
-    // Verify value types.
-    verifyTypes(rows, SystemSchema.SUPERVISOR_SIGNATURE);
+          // Allow access to a Datasource if
+          // - Super User or Datasource Write User requests Write access
+          // - Super User or Datasource Read User requests Read access
+          if (resource.getType().equals(ResourceType.DATASOURCE)) {
+            return new Access(
+                username.equals(Users.SUPER)
+                || (action == Action.READ && username.equals(Users.DATASOURCE_READ))
+                || (action == Action.WRITE && username.equals(Users.DATASOURCE_WRITE))
+            );
+          }
+
+          return new Access(true);
+        };
+      }
+    };
   }
 
   private static void verifyTypes(final List<Object[]> rows, final RowSignature signature)
@@ -1390,13 +1571,13 @@ public class SystemSchemaTest extends CalciteTestBase
       for (int i = 0; i < row.length; i++) {
         final Class<?> expectedClass;
 
-        final ValueType columnType =
+        final ColumnType columnType =
             signature.getColumnType(i)
                      .orElseThrow(() -> new ISE("Encountered null column type"));
 
         final boolean nullable = rowType.getFieldList().get(i).getType().isNullable();
 
-        switch (columnType) {
+        switch (columnType.getType()) {
           case LONG:
             expectedClass = Long.class;
             break;
@@ -1407,11 +1588,7 @@ public class SystemSchemaTest extends CalciteTestBase
             expectedClass = Double.class;
             break;
           case STRING:
-            if (signature.getColumnName(i).equals("segment_id")) {
-              expectedClass = SegmentId.class;
-            } else {
-              expectedClass = String.class;
-            }
+            expectedClass = String.class;
             break;
           default:
             throw new IAE("Don't know what class to expect for valueType[%s]", columnType);
@@ -1440,5 +1617,15 @@ public class SystemSchemaTest extends CalciteTestBase
         }
       }
     }
+  }
+
+  /**
+   * Usernames to be used in tests.
+   */
+  private static class Users
+  {
+    private static final String SUPER = CalciteTests.TEST_SUPERUSER_NAME;
+    private static final String DATASOURCE_READ = "datasourceRead";
+    private static final String DATASOURCE_WRITE = "datasourceWrite";
   }
 }

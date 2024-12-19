@@ -72,7 +72,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -181,7 +180,8 @@ public class BatchServerInventoryViewTest
         },
         cf,
         jsonMapper,
-        Predicates.alwaysTrue()
+        Predicates.alwaysTrue(),
+        "test"
     );
 
     batchServerInventoryView.start();
@@ -197,14 +197,15 @@ public class BatchServerInventoryViewTest
         },
         cf,
         jsonMapper,
-        new Predicate<Pair<DruidServerMetadata, DataSegment>>()
+        new Predicate<>()
         {
           @Override
           public boolean apply(@Nullable Pair<DruidServerMetadata, DataSegment> input)
           {
             return input.rhs.getInterval().getStart().isBefore(SEGMENT_INTERVAL_START.plusDays(INITIAL_SEGMENTS));
           }
-        }
+        },
+        "test"
     )
     {
       @Override
@@ -323,7 +324,7 @@ public class BatchServerInventoryViewTest
             )
         )
         .andAnswer(
-            new IAnswer<ServerView.CallbackAction>()
+            new IAnswer<>()
             {
               @Override
               public ServerView.CallbackAction answer()
@@ -341,7 +342,7 @@ public class BatchServerInventoryViewTest
     filteredBatchServerInventoryView.registerSegmentCallback(
         Execs.directExecutor(),
         callback,
-        new Predicate<Pair<DruidServerMetadata, DataSegment>>()
+        new Predicate<>()
         {
           @Override
           public boolean apply(@Nullable Pair<DruidServerMetadata, DataSegment> input)
@@ -424,7 +425,7 @@ public class BatchServerInventoryViewTest
   public void testSameTimeZnode() throws Exception
   {
     final int numThreads = INITIAL_SEGMENTS / 10;
-    final ListeningExecutorService executor = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(numThreads));
+    final ListeningExecutorService executor = MoreExecutors.listeningDecorator(Execs.multiThreaded(numThreads, "BatchServerInventoryViewTest-%d"));
 
     segmentAnnouncer.announceSegments(testSegments);
 
@@ -442,7 +443,7 @@ public class BatchServerInventoryViewTest
       final int ii = i;
       futures.add(
           executor.submit(
-              new Callable<BatchDataSegmentAnnouncer>()
+              new Callable<>()
               {
                 @Override
                 public BatchDataSegmentAnnouncer call()
@@ -476,7 +477,7 @@ public class BatchServerInventoryViewTest
                       announcer,
                       jsonMapper
                   );
-                  List<DataSegment> segments = new ArrayList<DataSegment>();
+                  List<DataSegment> segments = new ArrayList<>();
                   try {
                     for (int j = 0; j < INITIAL_SEGMENTS / numThreads; ++j) {
                       segments.add(makeSegment(INITIAL_SEGMENTS + ii + numThreads * j));

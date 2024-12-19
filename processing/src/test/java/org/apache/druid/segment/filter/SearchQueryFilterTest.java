@@ -33,8 +33,8 @@ import org.apache.druid.query.filter.Filter;
 import org.apache.druid.query.filter.SearchQueryDimFilter;
 import org.apache.druid.query.search.ContainsSearchQuerySpec;
 import org.apache.druid.query.search.SearchQuerySpec;
+import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.IndexBuilder;
-import org.apache.druid.segment.StorageAdapter;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Rule;
@@ -51,7 +51,7 @@ public class SearchQueryFilterTest extends BaseFilterTest
   public SearchQueryFilterTest(
       String testName,
       IndexBuilder indexBuilder,
-      Function<IndexBuilder, Pair<StorageAdapter, Closeable>> finisher,
+      Function<IndexBuilder, Pair<CursorFactory, Closeable>> finisher,
       boolean cnf,
       boolean optimize
   )
@@ -107,6 +107,9 @@ public class SearchQueryFilterTest extends BaseFilterTest
   @Test
   public void testMultiValueStringColumn()
   {
+    if (isAutoSchema()) {
+      return;
+    }
     if (NullHandling.replaceWithDefault()) {
       assertFilterMatches(new SearchQueryDimFilter("dim2", specForValue(""), null), ImmutableList.of("0", "3", "4"));
     } else {
@@ -152,7 +155,7 @@ public class SearchQueryFilterTest extends BaseFilterTest
           new SearchQueryDimFilter("dim1", specForValue("ANYMORE"), changeNullFn),
           ImmutableList.of("0")
       );
-      assertFilterMatches(
+      assertFilterMatchesSkipArrays(
           new SearchQueryDimFilter("dim2", specForValue("ANYMORE"), changeNullFn),
           ImmutableList.of("1", "2", "5")
       );
@@ -162,7 +165,7 @@ public class SearchQueryFilterTest extends BaseFilterTest
           new SearchQueryDimFilter("dim1", specForValue("ANYMORE"), changeNullFn),
           ImmutableList.of()
       );
-      assertFilterMatches(
+      assertFilterMatchesSkipArrays(
           new SearchQueryDimFilter("dim2", specForValue("ANYMORE"), changeNullFn),
           ImmutableList.of("1", "5")
       );
@@ -174,12 +177,21 @@ public class SearchQueryFilterTest extends BaseFilterTest
     );
     assertFilterMatches(new SearchQueryDimFilter("dim1", specForValue("ab"), changeNullFn), ImmutableList.of("4", "5"));
 
-    assertFilterMatches(new SearchQueryDimFilter("dim2", specForValue("a"), changeNullFn), ImmutableList.of("0", "3"));
+    assertFilterMatchesSkipArrays(
+        new SearchQueryDimFilter("dim2", specForValue("a"), changeNullFn),
+        ImmutableList.of("0", "3")
+    );
 
-    assertFilterMatches(new SearchQueryDimFilter("dim3", specForValue("ANYMORE"), changeNullFn), ImmutableList.of("0", "1", "2", "3", "4", "5"));
+    assertFilterMatches(
+        new SearchQueryDimFilter("dim3", specForValue("ANYMORE"), changeNullFn),
+        ImmutableList.of("0", "1", "2", "3", "4", "5")
+    );
     assertFilterMatches(new SearchQueryDimFilter("dim3", specForValue("a"), changeNullFn), ImmutableList.of());
 
-    assertFilterMatches(new SearchQueryDimFilter("dim4", specForValue("ANYMORE"), changeNullFn), ImmutableList.of("0", "1", "2", "3", "4", "5"));
+    assertFilterMatches(
+        new SearchQueryDimFilter("dim4", specForValue("ANYMORE"), changeNullFn),
+        ImmutableList.of("0", "1", "2", "3", "4", "5")
+    );
     assertFilterMatches(new SearchQueryDimFilter("dim4", specForValue("a"), changeNullFn), ImmutableList.of());
   }
 

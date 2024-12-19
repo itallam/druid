@@ -79,14 +79,14 @@ public class IndexIngestionBenchmark
   }
 
   private AppendableIndexSpec appendableIndexSpec;
-  private IncrementalIndex<?> incIndex;
+  private IncrementalIndex incIndex;
   private List<InputRow> rows;
   private GeneratorSchemaInfo schemaInfo;
 
   @Setup
   public void setup() throws JsonProcessingException
   {
-    ComplexMetrics.registerSerde("hyperUnique", new HyperUniquesSerde());
+    ComplexMetrics.registerSerde(HyperUniquesSerde.TYPE_NAME, new HyperUniquesSerde());
 
     schemaInfo = GeneratorBasicSchemas.SCHEMA_MAP.get(schema);
 
@@ -119,7 +119,7 @@ public class IndexIngestionBenchmark
     }
   }
 
-  private IncrementalIndex<?> makeIncIndex()
+  private IncrementalIndex makeIncIndex()
   {
     return appendableIndexSpec.builder()
         .setIndexSchema(

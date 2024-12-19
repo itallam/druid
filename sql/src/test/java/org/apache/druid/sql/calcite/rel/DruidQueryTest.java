@@ -24,8 +24,10 @@ import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.Pair;
 import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.query.DataSource;
+import org.apache.druid.query.JoinAlgorithm;
 import org.apache.druid.query.JoinDataSource;
 import org.apache.druid.query.TableDataSource;
+import org.apache.druid.query.expression.TestExprMacroTable;
 import org.apache.druid.query.filter.AndDimFilter;
 import org.apache.druid.query.filter.BoundDimFilter;
 import org.apache.druid.query.filter.DimFilter;
@@ -34,6 +36,8 @@ import org.apache.druid.query.ordering.StringComparators;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.segment.join.JoinType;
 import org.apache.druid.sql.calcite.filtration.Filtration;
+import org.apache.druid.sql.calcite.planner.ExpressionParserImpl;
+import org.apache.druid.sql.calcite.util.CalciteTests;
 import org.joda.time.Interval;
 import org.junit.Assert;
 import org.junit.Test;
@@ -58,10 +62,16 @@ public class DruidQueryTest
   public void test_filtration_noJoinAndInterval()
   {
     DataSource dataSource = new TableDataSource("test");
+
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         selectorFilter,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, dataSource, selectorFilter, Intervals.ETERNITY);
   }
@@ -73,7 +83,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         filterWithInterval,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, dataSource, selectorFilter, Intervals.utc(100, 200));
   }
@@ -85,7 +100,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         filterWithInterval,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, dataSource, selectorFilter, Intervals.utc(100, 200));
   }
@@ -98,7 +118,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         otherFilter,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, expectedDataSource, otherFilter, Intervals.utc(100, 200));
   }
@@ -111,7 +136,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         otherFilter,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, expectedDataSource, otherFilter, Intervals.utc(100, 200));
   }
@@ -124,7 +154,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         otherFilter,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, expectedDataSource, otherFilter, Intervals.utc(100, 200));
   }
@@ -137,7 +172,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         otherFilter,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, expectedDataSource, otherFilter, Intervals.utc(100, 200));
   }
@@ -155,7 +195,12 @@ public class DruidQueryTest
     Pair<DataSource, Filtration> pair = DruidQuery.getFiltration(
         dataSource,
         queryFilter,
-        VirtualColumnRegistry.create(RowSignature.empty())
+        VirtualColumnRegistry.create(
+            RowSignature.empty(),
+            new ExpressionParserImpl(TestExprMacroTable.INSTANCE),
+            false
+        ),
+        CalciteTests.createJoinableFactoryWrapper()
     );
     verify(pair, expectedDataSource, otherFilter, Intervals.utc(150, 200));
   }
@@ -169,7 +214,9 @@ public class DruidQueryTest
         "c == \"r.c\"",
         joinType,
         filter,
-        ExprMacroTable.nil()
+        ExprMacroTable.nil(),
+        CalciteTests.createJoinableFactoryWrapper(),
+        JoinAlgorithm.BROADCAST
     );
   }
 

@@ -20,6 +20,8 @@
 package org.apache.druid.query.aggregation.post;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import org.apache.druid.common.config.NullHandling;
@@ -29,7 +31,8 @@ import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.DoubleSumAggregator;
 import org.apache.druid.query.aggregation.PostAggregator;
 import org.apache.druid.query.cache.CacheKeyBuilder;
-import org.apache.druid.segment.column.ValueType;
+import org.apache.druid.segment.ColumnInspector;
+import org.apache.druid.segment.column.ColumnType;
 
 import javax.annotation.Nullable;
 
@@ -42,6 +45,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
+ *
  */
 public class ArithmeticPostAggregator implements PostAggregator
 {
@@ -72,7 +76,11 @@ public class ArithmeticPostAggregator implements PostAggregator
   )
   {
     Preconditions.checkArgument(fnName != null, "fn cannot not be null");
-    Preconditions.checkArgument(fields != null && fields.size() > 1, "Illegal number of fields[%s], must be > 1");
+    Preconditions.checkArgument(
+        fields != null && fields.size() > 1,
+        "Illegal number of fields[%s], must be > 1",
+        fields.size()
+    );
 
     this.name = name;
     this.fnName = fnName;
@@ -135,9 +143,9 @@ public class ArithmeticPostAggregator implements PostAggregator
   }
 
   @Override
-  public ValueType getType()
+  public ColumnType getType(ColumnInspector signature)
   {
-    return ValueType.DOUBLE;
+    return ColumnType.DOUBLE;
   }
 
   @Override
@@ -169,6 +177,7 @@ public class ArithmeticPostAggregator implements PostAggregator
   }
 
   @JsonProperty("ordering")
+  @JsonInclude(Include.NON_NULL)
   public String getOrdering()
   {
     return ordering;
@@ -200,6 +209,7 @@ public class ArithmeticPostAggregator implements PostAggregator
       case MINUS:
       case DIV:
       case QUOTIENT:
+      case POW:
         return true;
       default:
         throw new IAE(op.fn);
@@ -241,6 +251,14 @@ public class ArithmeticPostAggregator implements PostAggregator
       public double compute(double lhs, double rhs)
       {
         return lhs / rhs;
+      }
+    },
+
+    POW("pow") {
+      @Override
+      public double compute(double lhs, double rhs)
+      {
+        return Math.pow(lhs, rhs);
       }
     };
 

@@ -36,6 +36,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.SortedSet;
@@ -45,9 +46,12 @@ public class Metrics
 {
 
   private static final Logger log = new Logger(Metrics.class);
-  private final Map<String, DimensionsAndCollector> registeredMetrics = new HashMap<>();
+  private final Map<String, DimensionsAndCollector> registeredMetrics;
   private final ObjectMapper mapper = new ObjectMapper();
   public static final Pattern PATTERN = Pattern.compile("[^a-zA-Z_:][^a-zA-Z0-9_:]*");
+
+  private static final String TAG_HOSTNAME = "host_name";
+  private static final String TAG_SERVICE = "druid_service";
 
   public DimensionsAndCollector getByName(String name, String service)
   {
@@ -58,13 +62,30 @@ public class Metrics
     }
   }
 
-  public Metrics(String namespace, String path)
+  public Metrics(String namespace, String path, boolean isAddHostAsLabel, boolean isAddServiceAsLabel, Map<String, String> extraLabels)
   {
+    Map<String, DimensionsAndCollector> parsedRegisteredMetrics = new HashMap<>();
     Map<String, Metric> metrics = readConfig(path);
+
+    if (extraLabels == null) {
+      extraLabels = Collections.emptyMap(); // Avoid null checks later
+    }
+
     for (Map.Entry<String, Metric> entry : metrics.entrySet()) {
       String name = entry.getKey();
       Metric metric = entry.getValue();
       Metric.Type type = metric.type;
+
+      if (isAddHostAsLabel) {
+        metric.dimensions.add(TAG_HOSTNAME);
+      }
+
+      if (isAddServiceAsLabel) {
+        metric.dimensions.add(TAG_SERVICE);
+      }
+
+      metric.dimensions.addAll(extraLabels.keySet());
+
       String[] dimensions = metric.dimensions.toArray(new String[0]);
       String formattedName = PATTERN.matcher(StringUtils.toLowerCase(name)).replaceAll("_");
       SimpleCollector collector = null;
@@ -95,10 +116,10 @@ public class Metrics
       }
 
       if (collector != null) {
-        registeredMetrics.put(name, new DimensionsAndCollector(dimensions, collector, metric.conversionFactor));
+        parsedRegisteredMetrics.put(name, new DimensionsAndCollector(dimensions, collector, metric.conversionFactor));
       }
     }
-
+    this.registeredMetrics = Collections.unmodifiableMap(parsedRegisteredMetrics);
   }
 
   private Map<String, Metric> readConfig(String path)

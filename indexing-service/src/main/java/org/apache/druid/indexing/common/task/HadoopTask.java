@@ -22,16 +22,19 @@ package org.apache.druid.indexing.common.task;
 import com.google.common.base.Joiner;
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.inject.Injector;
 import org.apache.druid.guice.ExtensionsConfig;
-import org.apache.druid.guice.GuiceInjectors;
+import org.apache.druid.guice.ExtensionsLoader;
+import org.apache.druid.guice.StartupInjectorBuilder;
 import org.apache.druid.indexing.common.TaskToolbox;
-import org.apache.druid.initialization.Initialization;
+import org.apache.druid.initialization.ServerInjectorBuilder;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.utils.JvmUtils;
 
 import javax.annotation.Nullable;
+
 import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -48,13 +51,12 @@ import java.util.Map;
 public abstract class HadoopTask extends AbstractBatchIndexTask
 {
   private static final Logger log = new Logger(HadoopTask.class);
-  private static final ExtensionsConfig EXTENSIONS_CONFIG;
 
-  static final Injector INJECTOR = GuiceInjectors.makeStartupInjector();
-
-  static {
-    EXTENSIONS_CONFIG = INJECTOR.getInstance(ExtensionsConfig.class);
-  }
+  static final Injector INJECTOR = new StartupInjectorBuilder()
+      .forServer()
+      .add(ServerInjectorBuilder.registerNodeRoleModule(ImmutableSet.of()))
+      .build();
+  private static final ExtensionsLoader EXTENSIONS_LOADER = ExtensionsLoader.instance(INJECTOR);
 
   private final List<String> hadoopDependencyCoordinates;
 
@@ -65,7 +67,7 @@ public abstract class HadoopTask extends AbstractBatchIndexTask
       Map<String, Object> context
   )
   {
-    super(id, dataSource, context);
+    super(id, dataSource, context, IngestionMode.HADOOP);
     this.hadoopDependencyCoordinates = hadoopDependencyCoordinates;
   }
 
@@ -79,7 +81,7 @@ public abstract class HadoopTask extends AbstractBatchIndexTask
   // This is only used for classpath isolation in the runTask isolation stuff, so it shooouuullldddd be ok.
   /** {@link #buildClassLoader(TaskToolbox)} has outdated javadocs referencing this field, TODO update */
   @SuppressWarnings("unused")
-  protected static final Predicate<URL> IS_DRUID_URL = new Predicate<URL>()
+  protected static final Predicate<URL> IS_DRUID_URL = new Predicate<>()
   {
     @Override
     public boolean apply(@Nullable URL input)
@@ -152,8 +154,8 @@ public abstract class HadoopTask extends AbstractBatchIndexTask
     }
 
     final List<URL> extensionURLs = new ArrayList<>();
-    for (final File extension : Initialization.getExtensionFilesToLoad(EXTENSIONS_CONFIG)) {
-      final URLClassLoader extensionLoader = Initialization.getClassLoaderForExtension(extension, false);
+    for (final File extension : EXTENSIONS_LOADER.getExtensionFilesToLoad()) {
+      final URLClassLoader extensionLoader = EXTENSIONS_LOADER.getClassLoaderForExtension(extension, false);
       extensionURLs.addAll(Arrays.asList(extensionLoader.getURLs()));
     }
 
@@ -165,37 +167,29 @@ public abstract class HadoopTask extends AbstractBatchIndexTask
     for (final File hadoopDependency :
         Initialization.getHadoopDependencyFilesToLoad(
             finalHadoopDependencyCoordinates,
-            EXTENSIONS_CONFIG
+            EXTENSIONS_LOADER.config()
         )) {
-      final URLClassLoader hadoopLoader = Initialization.getClassLoaderForExtension(hadoopDependency, false);
+      final URLClassLoader hadoopLoader = EXTENSIONS_LOADER.getClassLoaderForExtension(hadoopDependency, false);
       localClassLoaderURLs.addAll(Arrays.asList(hadoopLoader.getURLs()));
     }
 
-    ClassLoader parent = null;
-    if (JvmUtils.isIsJava9Compatible()) {
-      try {
-        // See also https://docs.oracle.com/en/java/javase/11/migrate/index.html#JSMIG-GUID-A868D0B9-026F-4D46-B979-901834343F9E
-        parent = (ClassLoader) ClassLoader.class.getMethod("getPlatformClassLoader").invoke(null);
-      }
-      catch (IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
-        throw new RuntimeException(e);
-      }
-    }
+    ClassLoader parent = ClassLoader.getPlatformClassLoader();
     final ClassLoader classLoader = new URLClassLoader(
         localClassLoaderURLs.toArray(new URL[0]),
         parent
     );
 
     final String hadoopContainerDruidClasspathJars;
-    if (EXTENSIONS_CONFIG.getHadoopContainerDruidClasspath() == null) {
+    ExtensionsConfig extnConfig = EXTENSIONS_LOADER.config();
+    if (extnConfig.getHadoopContainerDruidClasspath() == null) {
       hadoopContainerDruidClasspathJars = Joiner.on(File.pathSeparator).join(jobURLs);
 
     } else {
       List<URL> hadoopContainerURLs = Lists.newArrayList(
-          Initialization.getURLsForClasspath(EXTENSIONS_CONFIG.getHadoopContainerDruidClasspath())
+          ExtensionsLoader.getURLsForClasspath(extnConfig.getHadoopContainerDruidClasspath())
       );
 
-      if (EXTENSIONS_CONFIG.getAddExtensionsToHadoopContainer()) {
+      if (extnConfig.getAddExtensionsToHadoopContainer()) {
         hadoopContainerURLs.addAll(extensionURLs);
       }
 
@@ -207,6 +201,15 @@ public abstract class HadoopTask extends AbstractBatchIndexTask
     System.setProperty("druid.hadoop.internal.classpath", hadoopContainerDruidClasspathJars);
 
     return classLoader;
+  }
+
+  /**
+   * This method logs the {@link ExtensionsConfig} that was used to fetch the hadoop dependencies and build the classpath
+   * for the jobs
+   */
+  protected static void logExtensionsConfig()
+  {
+    log.info("HadoopTask started with the following config:\n%s", EXTENSIONS_LOADER.config().toString());
   }
 
   /**

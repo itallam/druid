@@ -43,6 +43,7 @@ import org.apache.druid.segment.ColumnSelectorFactory;
 import org.apache.druid.segment.ColumnValueSelector;
 import org.apache.druid.segment.NilColumnValueSelector;
 import org.apache.druid.segment.column.ColumnCapabilities;
+import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.vector.VectorColumnSelectorFactory;
 
@@ -59,7 +60,9 @@ import java.util.Objects;
 @JsonTypeName("variance")
 public class VarianceAggregatorFactory extends AggregatorFactory
 {
-  private static final String VARIANCE_TYPE_NAME = "variance";
+  public static final String VARIANCE_TYPE_NAME = "variance";
+  public static final ColumnType TYPE = ColumnType.ofComplex(VARIANCE_TYPE_NAME);
+
   protected final String fieldName;
   protected final String name;
   @Nullable
@@ -93,31 +96,31 @@ public class VarianceAggregatorFactory extends AggregatorFactory
     this(name, fieldName, null, null);
   }
 
-  @Override
-  public String getComplexTypeName()
-  {
-    return VARIANCE_TYPE_NAME;
-  }
-
   /**
    * actual type is {@link VarianceAggregatorCollector}
    */
   @Override
-  public ValueType getType()
+  public ColumnType getIntermediateType()
   {
-    return ValueType.COMPLEX;
+    return TYPE;
   }
 
   @Override
-  public ValueType getFinalizedType()
+  public ColumnType getResultType()
   {
-    return ValueType.DOUBLE;
+    return ColumnType.DOUBLE;
   }
 
   @Override
   public int getMaxIntermediateSize()
   {
     return VarianceAggregatorCollector.getMaxIntermediateSize();
+  }
+
+  @Override
+  public AggregatorFactory withName(String newName)
+  {
+    return new VarianceAggregatorFactory(newName, getFieldName(), getEstimator(), inputType);
   }
 
   @Override
@@ -247,12 +250,6 @@ public class VarianceAggregatorFactory extends AggregatorFactory
   }
 
   @Override
-  public List<AggregatorFactory> getRequiredColumns()
-  {
-    return Collections.singletonList(new VarianceAggregatorFactory(fieldName, fieldName, estimator, inputType));
-  }
-
-  @Override
   public AggregatorFactory getMergingFactory(AggregatorFactory other) throws AggregatorFactoryNotMergeableException
   {
     if (Objects.equals(getName(), other.getName()) && other instanceof VarianceAggregatorFactory) {
@@ -373,6 +370,7 @@ public class VarianceAggregatorFactory extends AggregatorFactory
 
   private String getTypeString(ColumnInspector columnInspector)
   {
+    // todo: make this better... why strings?
     String type = inputType;
     if (type == null) {
       ColumnCapabilities capabilities = columnInspector.getColumnCapabilities(fieldName);

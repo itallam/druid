@@ -26,7 +26,6 @@ import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.data.CompressedColumnarLongsSupplier;
 
 import javax.annotation.Nullable;
-
 import java.nio.ByteOrder;
 
 /**
@@ -97,7 +96,7 @@ public class LongNumericColumnPartSerde implements ColumnPartSerde
   @Override
   public Deserializer getDeserializer()
   {
-    return (buffer, builder, columnConfig) -> {
+    return (buffer, builder, columnConfig, parent) -> {
       final CompressedColumnarLongsSupplier column = CompressedColumnarLongsSupplier.fromByteBuffer(
           buffer,
           byteOrder

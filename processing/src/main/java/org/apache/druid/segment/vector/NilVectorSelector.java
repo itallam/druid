@@ -20,25 +20,24 @@
 package org.apache.druid.segment.vector;
 
 import org.apache.druid.common.config.NullHandling;
+import org.apache.druid.query.QueryContexts;
 import org.apache.druid.segment.IdLookup;
-import org.apache.druid.segment.QueryableIndexStorageAdapter;
 
 import javax.annotation.Nullable;
+import java.util.Arrays;
 
 public class NilVectorSelector
     implements VectorValueSelector, VectorObjectSelector, SingleValueDimensionVectorSelector, IdLookup
 {
-  private static final boolean[] DEFAULT_NULLS_VECTOR = new boolean[QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE];
-  private static final int[] DEFAULT_INT_VECTOR = new int[QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE];
-  private static final long[] DEFAULT_LONG_VECTOR = new long[QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE];
-  private static final float[] DEFAULT_FLOAT_VECTOR = new float[QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE];
-  private static final double[] DEFAULT_DOUBLE_VECTOR = new double[QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE];
-  private static final Object[] DEFAULT_OBJECT_VECTOR = new Object[QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE];
+  private static final boolean[] DEFAULT_NULLS_VECTOR = new boolean[QueryContexts.DEFAULT_VECTOR_SIZE];
+  private static final int[] DEFAULT_INT_VECTOR = new int[QueryContexts.DEFAULT_VECTOR_SIZE];
+  private static final long[] DEFAULT_LONG_VECTOR = new long[QueryContexts.DEFAULT_VECTOR_SIZE];
+  private static final float[] DEFAULT_FLOAT_VECTOR = new float[QueryContexts.DEFAULT_VECTOR_SIZE];
+  private static final double[] DEFAULT_DOUBLE_VECTOR = new double[QueryContexts.DEFAULT_VECTOR_SIZE];
+  private static final Object[] DEFAULT_OBJECT_VECTOR = new Object[QueryContexts.DEFAULT_VECTOR_SIZE];
 
   static {
-    for (int i = 0; i < DEFAULT_NULLS_VECTOR.length; i++) {
-      DEFAULT_NULLS_VECTOR[i] = NullHandling.sqlCompatible();
-    }
+    Arrays.fill(DEFAULT_NULLS_VECTOR, NullHandling.sqlCompatible());
   }
 
   private final VectorSizeInspector vectorSizeInspector;
@@ -70,7 +69,7 @@ public class NilVectorSelector
 
   public static NilVectorSelector create(final VectorSizeInspector vectorSizeInspector)
   {
-    if (vectorSizeInspector.getMaxVectorSize() <= QueryableIndexStorageAdapter.DEFAULT_VECTOR_SIZE) {
+    if (vectorSizeInspector.getMaxVectorSize() <= QueryContexts.DEFAULT_VECTOR_SIZE) {
       // Reuse static vars when possible.
       return new NilVectorSelector(
           vectorSizeInspector,
@@ -82,9 +81,13 @@ public class NilVectorSelector
           DEFAULT_OBJECT_VECTOR
       );
     } else {
+      final boolean[] nulls = new boolean[vectorSizeInspector.getMaxVectorSize()];
+      if (NullHandling.sqlCompatible()) {
+        Arrays.fill(nulls, true);
+      }
       return new NilVectorSelector(
           vectorSizeInspector,
-          new boolean[vectorSizeInspector.getMaxVectorSize()],
+          nulls,
           new int[vectorSizeInspector.getMaxVectorSize()],
           new long[vectorSizeInspector.getMaxVectorSize()],
           new float[vectorSizeInspector.getMaxVectorSize()],

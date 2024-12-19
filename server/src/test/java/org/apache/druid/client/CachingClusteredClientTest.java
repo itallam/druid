@@ -26,12 +26,9 @@ import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
-import com.google.common.hash.HashFunction;
-import com.google.common.hash.Hashing;
 import com.google.common.util.concurrent.ForwardingListeningExecutorService;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
@@ -51,7 +48,6 @@ import org.apache.druid.client.selector.QueryableDruidServer;
 import org.apache.druid.client.selector.RandomServerSelectorStrategy;
 import org.apache.druid.client.selector.ServerSelector;
 import org.apache.druid.guice.http.DruidHttpClientConfig;
-import org.apache.druid.hll.HyperLogLogCollector;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Intervals;
@@ -67,28 +63,26 @@ import org.apache.druid.java.util.common.guava.MergeIterable;
 import org.apache.druid.java.util.common.guava.Sequence;
 import org.apache.druid.java.util.common.guava.Sequences;
 import org.apache.druid.java.util.common.guava.nary.TrinaryFn;
-import org.apache.druid.java.util.common.io.Closer;
+import org.apache.druid.query.BrokerParallelMergeConfig;
 import org.apache.druid.query.BySegmentResultValueClass;
-import org.apache.druid.query.DruidProcessingConfig;
 import org.apache.druid.query.Druids;
 import org.apache.druid.query.FinalizeResultsQueryRunner;
+import org.apache.druid.query.FluentQueryRunner;
 import org.apache.druid.query.Query;
+import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryContexts;
 import org.apache.druid.query.QueryPlus;
 import org.apache.druid.query.QueryRunner;
-import org.apache.druid.query.QueryToolChestWarehouse;
 import org.apache.druid.query.Result;
 import org.apache.druid.query.SegmentDescriptor;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.aggregation.PostAggregator;
-import org.apache.druid.query.aggregation.hyperloglog.HyperUniquesAggregatorFactory;
 import org.apache.druid.query.aggregation.post.ArithmeticPostAggregator;
 import org.apache.druid.query.aggregation.post.ConstantPostAggregator;
 import org.apache.druid.query.aggregation.post.FieldAccessPostAggregator;
 import org.apache.druid.query.context.ResponseContext;
-import org.apache.druid.query.context.ResponseContext.Key;
 import org.apache.druid.query.dimension.DefaultDimensionSpec;
 import org.apache.druid.query.filter.AndDimFilter;
 import org.apache.druid.query.filter.BoundDimFilter;
@@ -98,7 +92,6 @@ import org.apache.druid.query.filter.OrDimFilter;
 import org.apache.druid.query.filter.SelectorDimFilter;
 import org.apache.druid.query.groupby.GroupByQuery;
 import org.apache.druid.query.groupby.ResultRow;
-import org.apache.druid.query.groupby.strategy.GroupByStrategySelector;
 import org.apache.druid.query.ordering.StringComparators;
 import org.apache.druid.query.planning.DataSourceAnalysis;
 import org.apache.druid.query.search.SearchHit;
@@ -120,9 +113,8 @@ import org.apache.druid.query.topn.TopNQueryConfig;
 import org.apache.druid.query.topn.TopNQueryQueryToolChest;
 import org.apache.druid.query.topn.TopNResultValue;
 import org.apache.druid.segment.TestHelper;
-import org.apache.druid.segment.join.MapJoinableFactory;
 import org.apache.druid.server.QueryScheduler;
-import org.apache.druid.server.ServerTestHelper;
+import org.apache.druid.server.QueryStackTests;
 import org.apache.druid.server.coordination.ServerType;
 import org.apache.druid.server.initialization.ServerConfig;
 import org.apache.druid.server.metrics.NoopServiceEmitter;
@@ -145,16 +137,14 @@ import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.joda.time.Interval;
 import org.joda.time.Period;
-import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import javax.annotation.Nullable;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -168,7 +158,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -181,10 +170,7 @@ import java.util.stream.IntStream;
 public class CachingClusteredClientTest
 {
   private static final ImmutableMap<String, Object> CONTEXT = ImmutableMap.of(
-      "finalize", false,
-
-      // GroupBy v2 won't cache on the broker, so test with v1.
-      "groupByStrategy", GroupByStrategySelector.STRATEGY_V1
+      QueryContexts.FINALIZE_KEY, false
   );
   private static final MultipleIntervalSegmentSpec SEG_SPEC = new MultipleIntervalSegmentSpec(ImmutableList.of());
   private static final String DATA_SOURCE = "test";
@@ -264,10 +250,9 @@ public class CachingClusteredClientTest
   private static final DateTimeZone TIMEZONE = DateTimes.inferTzFromString("America/Los_Angeles");
   private static final Granularity PT1H_TZ_GRANULARITY = new PeriodGranularity(new Period("PT1H"), null, TIMEZONE);
   private static final String TOP_DIM = "a_dim";
-  private static final Pair<QueryToolChestWarehouse, Closer> WAREHOUSE_AND_CLOSER = CachingClusteredClientTestUtils
-      .createWarehouse(JSON_MAPPER);
-  private static final QueryToolChestWarehouse WAREHOUSE = WAREHOUSE_AND_CLOSER.lhs;
-  private static final Closer RESOURCE_CLOSER = WAREHOUSE_AND_CLOSER.rhs;
+
+  @ClassRule
+  public static QueryStackTests.Junit4ConglomerateRule conglomerateRule = new QueryStackTests.Junit4ConglomerateRule();
 
   private final Random random;
 
@@ -288,7 +273,7 @@ public class CachingClusteredClientTest
   {
     return Lists.transform(
         Lists.newArrayList(new RangeIterable(RANDOMNESS)),
-        new Function<Integer, Object[]>()
+        new Function<>()
         {
           @Override
           public Object[] apply(Integer input)
@@ -297,12 +282,6 @@ public class CachingClusteredClientTest
           }
         }
     );
-  }
-
-  @AfterClass
-  public static void tearDownClass() throws IOException
-  {
-    RESOURCE_CLOSER.close();
   }
 
   @Before
@@ -377,7 +356,8 @@ public class CachingClusteredClientTest
                   {
                     pair.lhs.setException(t);
                   }
-                }
+                },
+                MoreExecutors.directExecutor()
             );
           }
         }
@@ -775,15 +755,12 @@ public class CachingClusteredClientTest
         .threshold(3)
         .intervals(SEG_SPEC)
         .filters(DIM_FILTER)
-        .granularity(GRANULARITY)
+        .granularity(Granularities.HOUR)
         .aggregators(AGGS)
         .postAggregators(POST_AGGS)
         .context(CONTEXT);
 
-    QueryRunner runner = new FinalizeResultsQueryRunner(
-        getDefaultQueryRunner(),
-        new TopNQueryQueryToolChest(new TopNQueryConfig())
-    );
+    QueryRunner runner = makeTopNQueryRunner();
 
     testQueryCaching(
         runner,
@@ -854,10 +831,7 @@ public class CachingClusteredClientTest
         .postAggregators(POST_AGGS)
         .context(CONTEXT);
 
-    QueryRunner runner = new FinalizeResultsQueryRunner(
-        getDefaultQueryRunner(),
-        new TopNQueryQueryToolChest(new TopNQueryConfig())
-    );
+    QueryRunner runner = makeTopNQueryRunner();
 
     testQueryCaching(
         runner,
@@ -879,7 +853,6 @@ public class CachingClusteredClientTest
         .build();
     TestHelper.assertExpectedResults(
         makeRenamedTopNResults(
-
             new DateTime("2011-11-04", TIMEZONE), "a", 50, 4994, "b", 50, 4993, "c", 50, 4992,
             new DateTime("2011-11-05", TIMEZONE), "a", 50, 4991, "b", 50, 4990, "c", 50, 4989,
             new DateTime("2011-11-06", TIMEZONE), "a", 50, 4991, "b", 50, 4990, "c", 50, 4989,
@@ -953,15 +926,13 @@ public class CachingClusteredClientTest
         .threshold(3)
         .intervals(SEG_SPEC)
         .filters(DIM_FILTER)
-        .granularity(GRANULARITY)
+        .granularity(Granularities.HOUR)
         .aggregators(AGGS)
         .postAggregators(POST_AGGS)
         .context(CONTEXT);
 
-    QueryRunner runner = new FinalizeResultsQueryRunner(
-        getDefaultQueryRunner(),
-        new TopNQueryQueryToolChest(new TopNQueryConfig())
-    );
+    QueryRunner runner = makeTopNQueryRunner();
+
     testQueryCaching(
         runner,
         builder.randomQueryId().build(),
@@ -1024,15 +995,12 @@ public class CachingClusteredClientTest
         .threshold(3)
         .intervals(SEG_SPEC)
         .filters(DIM_FILTER)
-        .granularity(GRANULARITY)
+        .granularity(Granularities.HOUR)
         .aggregators(AGGS)
         .postAggregators(POST_AGGS)
         .context(CONTEXT);
 
-    QueryRunner runner = new FinalizeResultsQueryRunner(
-        getDefaultQueryRunner(),
-        new TopNQueryQueryToolChest(new TopNQueryConfig())
-    );
+    QueryRunner runner = makeTopNQueryRunner();
 
     testQueryCaching(
         runner,
@@ -1084,6 +1052,16 @@ public class CachingClusteredClientTest
         ),
         runner.run(QueryPlus.wrap(query))
     );
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private FluentQueryRunner makeTopNQueryRunner()
+  {
+    return FluentQueryRunner
+        .create(getDefaultQueryRunner(), new TopNQueryQueryToolChest(new TopNQueryConfig()))
+        .applyPreMergeDecoration()
+        .mergeResults(true)
+        .applyPostMergeDecoration();
   }
 
   @Test
@@ -1243,112 +1221,6 @@ public class CachingClusteredClientTest
             DateTimes.of("2011-01-09T01"), "how6", 1, "howdy6", 2, "howwwwww6", 3, "howww6", 4
         ),
         runner.run(QueryPlus.wrap(query), context)
-    );
-  }
-
-  @Test
-  public void testGroupByCaching()
-  {
-    List<AggregatorFactory> aggsWithUniques = ImmutableList.<AggregatorFactory>builder()
-        .addAll(AGGS)
-        .add(new HyperUniquesAggregatorFactory("uniques", "uniques"))
-        .build();
-
-    final HashFunction hashFn = Hashing.murmur3_128();
-
-    GroupByQuery.Builder builder = new GroupByQuery.Builder()
-        .setDataSource(DATA_SOURCE)
-        .setQuerySegmentSpec(SEG_SPEC)
-        .setDimFilter(DIM_FILTER)
-        .setGranularity(GRANULARITY).setDimensions(new DefaultDimensionSpec("a", "a"))
-        .setAggregatorSpecs(aggsWithUniques)
-        .setPostAggregatorSpecs(POST_AGGS)
-        .setContext(CONTEXT);
-
-    final HyperLogLogCollector collector = HyperLogLogCollector.makeLatestCollector();
-    collector.add(hashFn.hashString("abc123", StandardCharsets.UTF_8).asBytes());
-    collector.add(hashFn.hashString("123abc", StandardCharsets.UTF_8).asBytes());
-
-    final GroupByQuery query = builder.randomQueryId().build();
-
-    testQueryCaching(
-        getDefaultQueryRunner(),
-        query,
-        Intervals.of("2011-01-01/2011-01-02"),
-        makeGroupByResults(
-            query,
-            DateTimes.of("2011-01-01"),
-            ImmutableMap.of("a", "a", "rows", 1, "imps", 1, "impers", 1, "uniques", collector)
-        ),
-
-        Intervals.of("2011-01-02/2011-01-03"),
-        makeGroupByResults(
-            query,
-            DateTimes.of("2011-01-02"),
-            ImmutableMap.of("a", "b", "rows", 2, "imps", 2, "impers", 2, "uniques", collector)
-        ),
-
-        Intervals.of("2011-01-05/2011-01-10"),
-        makeGroupByResults(
-            query,
-            DateTimes.of("2011-01-05"),
-            ImmutableMap.of("a", "c", "rows", 3, "imps", 3, "impers", 3, "uniques", collector),
-            DateTimes.of("2011-01-06"),
-            ImmutableMap.of("a", "d", "rows", 4, "imps", 4, "impers", 4, "uniques", collector),
-            DateTimes.of("2011-01-07"),
-            ImmutableMap.of("a", "e", "rows", 5, "imps", 5, "impers", 5, "uniques", collector),
-            DateTimes.of("2011-01-08"),
-            ImmutableMap.of("a", "f", "rows", 6, "imps", 6, "impers", 6, "uniques", collector),
-            DateTimes.of("2011-01-09"),
-            ImmutableMap.of("a", "g", "rows", 7, "imps", 7, "impers", 7, "uniques", collector)
-        ),
-
-        Intervals.of("2011-01-05/2011-01-10"),
-        makeGroupByResults(
-            query,
-            DateTimes.of("2011-01-05T01"),
-            ImmutableMap.of("a", "c", "rows", 3, "imps", 3, "impers", 3, "uniques", collector),
-            DateTimes.of("2011-01-06T01"),
-            ImmutableMap.of("a", "d", "rows", 4, "imps", 4, "impers", 4, "uniques", collector),
-            DateTimes.of("2011-01-07T01"),
-            ImmutableMap.of("a", "e", "rows", 5, "imps", 5, "impers", 5, "uniques", collector),
-            DateTimes.of("2011-01-08T01"),
-            ImmutableMap.of("a", "f", "rows", 6, "imps", 6, "impers", 6, "uniques", collector),
-            DateTimes.of("2011-01-09T01"),
-            ImmutableMap.of("a", "g", "rows", 7, "imps", 7, "impers", 7, "uniques", collector)
-        )
-    );
-
-    QueryRunner runner = new FinalizeResultsQueryRunner(
-        getDefaultQueryRunner(),
-        WAREHOUSE.getToolChest(query)
-    );
-    TestHelper.assertExpectedObjects(
-        makeGroupByResults(
-            query,
-            DateTimes.of("2011-01-05T"),
-            ImmutableMap.of("a", "c", "rows", 3, "imps", 3, "impers", 3, "uniques", collector),
-            DateTimes.of("2011-01-05T01"),
-            ImmutableMap.of("a", "c", "rows", 3, "imps", 3, "impers", 3, "uniques", collector),
-            DateTimes.of("2011-01-06T"),
-            ImmutableMap.of("a", "d", "rows", 4, "imps", 4, "impers", 4, "uniques", collector),
-            DateTimes.of("2011-01-06T01"),
-            ImmutableMap.of("a", "d", "rows", 4, "imps", 4, "impers", 4, "uniques", collector),
-            DateTimes.of("2011-01-07T"),
-            ImmutableMap.of("a", "e", "rows", 5, "imps", 5, "impers", 5, "uniques", collector),
-            DateTimes.of("2011-01-07T01"),
-            ImmutableMap.of("a", "e", "rows", 5, "imps", 5, "impers", 5, "uniques", collector),
-            DateTimes.of("2011-01-08T"),
-            ImmutableMap.of("a", "f", "rows", 6, "imps", 6, "impers", 6, "uniques", collector),
-            DateTimes.of("2011-01-08T01"),
-            ImmutableMap.of("a", "f", "rows", 6, "imps", 6, "impers", 6, "uniques", collector),
-            DateTimes.of("2011-01-09T"),
-            ImmutableMap.of("a", "g", "rows", 7, "imps", 7, "impers", 7, "uniques", collector),
-            DateTimes.of("2011-01-09T01"),
-            ImmutableMap.of("a", "g", "rows", 7, "imps", 7, "impers", 7, "uniques", collector)
-        ),
-        runner.run(QueryPlus.wrap(builder.randomQueryId().setInterval("2011-01-05/2011-01-10").build())),
-        ""
     );
   }
 
@@ -1871,7 +1743,7 @@ public class CachingClusteredClientTest
             partitions,
             partitionDimensions,
             partitionFunction,
-            ServerTestHelper.MAPPER
+            TestHelper.makeJsonMapper()
         ),
         null,
         9,
@@ -2028,7 +1900,7 @@ public class CachingClusteredClientTest
             results.add(expectation.getResults());
           }
           EasyMock.expect(queryable.run(EasyMock.capture(capture), EasyMock.capture(context)))
-                  .andAnswer(new IAnswer<Sequence>()
+                  .andAnswer(new IAnswer<>()
                   {
                     @Override
                     public Sequence answer()
@@ -2252,9 +2124,6 @@ public class CachingClusteredClientTest
               for (int i = 0; i < numTimesToQuery; ++i) {
                 TestHelper.assertExpectedResults(
                     new MergeIterable(
-                        query instanceof GroupByQuery
-                        ? ((GroupByQuery) query).getResultOrdering()
-                        : Comparators.naturalNullsFirst(),
                         FunctionalIterable
                             .create(new RangeIterable(expectedResultsRangeStart, expectedResultsRangeEnd))
                             .transformCat(
@@ -2275,7 +2144,10 @@ public class CachingClusteredClientTest
                                     return retVal;
                                   }
                                 }
-                            )
+                            ),
+                        query instanceof GroupByQuery
+                        ? ((GroupByQuery) query).getResultOrdering()
+                        : Comparators.naturalNullsFirst()
                     ),
                     runner.run(
                         QueryPlus.wrap(
@@ -2284,7 +2156,8 @@ public class CachingClusteredClientTest
                             )
                         ),
                         initializeResponseContext()
-                    )
+                    ).toList(),
+                    StringUtils.format("Run number [%d]", i)
                 );
                 if (queryCompletedCallback != null) {
                   queryCompletedCallback.run();
@@ -2299,12 +2172,13 @@ public class CachingClusteredClientTest
       for (Capture queryCapture : queryCaptures) {
         QueryPlus capturedQueryPlus = (QueryPlus) queryCapture.getValue();
         Query capturedQuery = capturedQueryPlus.getQuery();
+        final QueryContext queryContext = capturedQuery.context();
         if (expectBySegment) {
-          Assert.assertEquals(true, capturedQuery.getContextValue(QueryContexts.BY_SEGMENT_KEY));
+          Assert.assertEquals(true, queryContext.getBoolean(QueryContexts.BY_SEGMENT_KEY));
         } else {
           Assert.assertTrue(
-              capturedQuery.getContextValue(QueryContexts.BY_SEGMENT_KEY) == null ||
-              capturedQuery.getContextValue(QueryContexts.BY_SEGMENT_KEY).equals(false)
+              queryContext.get(QueryContexts.BY_SEGMENT_KEY) == null ||
+              !queryContext.getBoolean(QueryContexts.BY_SEGMENT_KEY)
           );
         }
       }
@@ -2385,7 +2259,7 @@ public class CachingClusteredClientTest
               .trinaryTransform(
                   intervals,
                   results,
-                  new TrinaryFn<SegmentId, Interval, Iterable<Result<TimeseriesResultValue>>, Result<TimeseriesResultValue>>()
+                  new TrinaryFn<>()
                   {
                     @Override
                     @SuppressWarnings("unchecked")
@@ -2424,7 +2298,7 @@ public class CachingClusteredClientTest
             .trinaryTransform(
                 intervals,
                 results,
-                new TrinaryFn<SegmentId, Interval, Iterable<Result<TopNResultValue>>, Result<TopNResultValue>>()
+                new TrinaryFn<>()
                 {
                   @Override
                   @SuppressWarnings("unchecked")
@@ -2460,7 +2334,7 @@ public class CachingClusteredClientTest
             .trinaryTransform(
                 intervals,
                 results,
-                new TrinaryFn<SegmentId, Interval, Iterable<Result<SearchResultValue>>, Result<SearchResultValue>>()
+                new TrinaryFn<>()
                 {
                   @Override
                   @SuppressWarnings("unchecked")
@@ -2497,7 +2371,7 @@ public class CachingClusteredClientTest
             .trinaryTransform(
                 intervals,
                 results,
-                new TrinaryFn<SegmentId, Interval, Iterable<ResultRow>, Result>()
+                new TrinaryFn<>()
                 {
                   @Override
                   @SuppressWarnings("unchecked")
@@ -2541,7 +2415,7 @@ public class CachingClusteredClientTest
             .trinaryTransform(
                 intervals,
                 results,
-                new TrinaryFn<SegmentId, Interval, Iterable<Result<TimeBoundaryResultValue>>, Result<TimeBoundaryResultValue>>()
+                new TrinaryFn<>()
                 {
                   @Override
                   @SuppressWarnings("unchecked")
@@ -2664,7 +2538,7 @@ public class CachingClusteredClientTest
         index += 3;
       }
 
-      retVal.add(new Result<>(timestamp, new TopNResultValue(values)));
+      retVal.add(new Result<>(timestamp, TopNResultValue.create(values)));
     }
     return retVal;
   }
@@ -2754,7 +2628,7 @@ public class CachingClusteredClientTest
   )
   {
     return new CachingClusteredClient(
-        WAREHOUSE,
+        conglomerateRule.getConglomerate(),
         new TimelineServerView()
         {
           @Override
@@ -2829,19 +2703,26 @@ public class CachingClusteredClientTest
             return 0L;
           }
         },
-        new DruidProcessingConfig()
+        new BrokerParallelMergeConfig()
         {
           @Override
-          public String getFormatString()
+          public boolean useParallelMergePool()
           {
-            return null;
+            return true;
           }
 
           @Override
-          public int getMergePoolParallelism()
+          public int getParallelism()
           {
             // fixed so same behavior across all test environments
-            return 4;
+            return 1;
+          }
+
+          @Override
+          public int getDefaultMaxQueryParallelism()
+          {
+            // fixed so same behavior across all test environments
+            return 1;
           }
         },
         ForkJoinPool.commonPool(),
@@ -2851,12 +2732,11 @@ public class CachingClusteredClientTest
             NoQueryLaningStrategy.INSTANCE,
             new ServerConfig()
         ),
-        new MapJoinableFactory(ImmutableSet.of(), ImmutableMap.of()),
         new NoopServiceEmitter()
     );
   }
 
-  private static class ServerExpectation<T>
+  public static class ServerExpectation<T>
   {
     private final SegmentId segmentId;
     private final Interval interval;
@@ -3059,7 +2939,7 @@ public class CachingClusteredClientTest
     }
   }
 
-  private static class ServerExpectations implements Iterable<ServerExpectation>
+  public static class ServerExpectations implements Iterable<ServerExpectation>
   {
     private final DruidServer server;
     private final QueryRunner queryRunner;
@@ -3160,103 +3040,6 @@ public class CachingClusteredClientTest
   }
 
   @Test
-  public void testGroupByCachingRenamedAggs()
-  {
-    GroupByQuery.Builder builder = new GroupByQuery.Builder()
-        .setDataSource(DATA_SOURCE)
-        .setQuerySegmentSpec(SEG_SPEC)
-        .setDimFilter(DIM_FILTER)
-        .setGranularity(GRANULARITY).setDimensions(new DefaultDimensionSpec("a", "output"))
-        .setAggregatorSpecs(AGGS)
-        .setContext(CONTEXT);
-
-    final GroupByQuery query1 = builder.randomQueryId().build();
-    testQueryCaching(
-        getDefaultQueryRunner(),
-        query1,
-        Intervals.of("2011-01-01/2011-01-02"),
-        makeGroupByResults(
-            query1,
-            DateTimes.of("2011-01-01"),
-            ImmutableMap.of("output", "a", "rows", 1, "imps", 1, "impers", 1)
-        ),
-
-        Intervals.of("2011-01-02/2011-01-03"),
-        makeGroupByResults(
-            query1,
-            DateTimes.of("2011-01-02"),
-            ImmutableMap.of("output", "b", "rows", 2, "imps", 2, "impers", 2)
-        ),
-
-        Intervals.of("2011-01-05/2011-01-10"),
-        makeGroupByResults(
-            query1,
-            DateTimes.of("2011-01-05"), ImmutableMap.of("output", "c", "rows", 3, "imps", 3, "impers", 3),
-            DateTimes.of("2011-01-06"), ImmutableMap.of("output", "d", "rows", 4, "imps", 4, "impers", 4),
-            DateTimes.of("2011-01-07"), ImmutableMap.of("output", "e", "rows", 5, "imps", 5, "impers", 5),
-            DateTimes.of("2011-01-08"), ImmutableMap.of("output", "f", "rows", 6, "imps", 6, "impers", 6),
-            DateTimes.of("2011-01-09"), ImmutableMap.of("output", "g", "rows", 7, "imps", 7, "impers", 7)
-        ),
-
-        Intervals.of("2011-01-05/2011-01-10"),
-        makeGroupByResults(
-            query1,
-            DateTimes.of("2011-01-05T01"), ImmutableMap.of("output", "c", "rows", 3, "imps", 3, "impers", 3),
-            DateTimes.of("2011-01-06T01"), ImmutableMap.of("output", "d", "rows", 4, "imps", 4, "impers", 4),
-            DateTimes.of("2011-01-07T01"), ImmutableMap.of("output", "e", "rows", 5, "imps", 5, "impers", 5),
-            DateTimes.of("2011-01-08T01"), ImmutableMap.of("output", "f", "rows", 6, "imps", 6, "impers", 6),
-            DateTimes.of("2011-01-09T01"), ImmutableMap.of("output", "g", "rows", 7, "imps", 7, "impers", 7)
-        )
-    );
-
-    QueryRunner runner = new FinalizeResultsQueryRunner(
-        getDefaultQueryRunner(),
-        WAREHOUSE.getToolChest(query1)
-    );
-    final ResponseContext context = initializeResponseContext();
-    TestHelper.assertExpectedObjects(
-        makeGroupByResults(
-            query1,
-            DateTimes.of("2011-01-05T"), ImmutableMap.of("output", "c", "rows", 3, "imps", 3, "impers", 3),
-            DateTimes.of("2011-01-05T01"), ImmutableMap.of("output", "c", "rows", 3, "imps", 3, "impers", 3),
-            DateTimes.of("2011-01-06T"), ImmutableMap.of("output", "d", "rows", 4, "imps", 4, "impers", 4),
-            DateTimes.of("2011-01-06T01"), ImmutableMap.of("output", "d", "rows", 4, "imps", 4, "impers", 4),
-            DateTimes.of("2011-01-07T"), ImmutableMap.of("output", "e", "rows", 5, "imps", 5, "impers", 5),
-            DateTimes.of("2011-01-07T01"), ImmutableMap.of("output", "e", "rows", 5, "imps", 5, "impers", 5),
-            DateTimes.of("2011-01-08T"), ImmutableMap.of("output", "f", "rows", 6, "imps", 6, "impers", 6),
-            DateTimes.of("2011-01-08T01"), ImmutableMap.of("output", "f", "rows", 6, "imps", 6, "impers", 6),
-            DateTimes.of("2011-01-09T"), ImmutableMap.of("output", "g", "rows", 7, "imps", 7, "impers", 7),
-            DateTimes.of("2011-01-09T01"), ImmutableMap.of("output", "g", "rows", 7, "imps", 7, "impers", 7)
-        ),
-        runner.run(QueryPlus.wrap(builder.randomQueryId().setInterval("2011-01-05/2011-01-10").build()), context),
-        ""
-    );
-
-    final GroupByQuery query2 = builder
-        .setInterval("2011-01-05/2011-01-10").setDimensions(new DefaultDimensionSpec("a", "output2"))
-        .setAggregatorSpecs(RENAMED_AGGS)
-        .randomQueryId()
-        .build();
-    TestHelper.assertExpectedObjects(
-        makeGroupByResults(
-            query2,
-            DateTimes.of("2011-01-05T"), ImmutableMap.of("output2", "c", "rows", 3, "imps", 3, "impers2", 3),
-            DateTimes.of("2011-01-05T01"), ImmutableMap.of("output2", "c", "rows", 3, "imps", 3, "impers2", 3),
-            DateTimes.of("2011-01-06T"), ImmutableMap.of("output2", "d", "rows", 4, "imps", 4, "impers2", 4),
-            DateTimes.of("2011-01-06T01"), ImmutableMap.of("output2", "d", "rows", 4, "imps", 4, "impers2", 4),
-            DateTimes.of("2011-01-07T"), ImmutableMap.of("output2", "e", "rows", 5, "imps", 5, "impers2", 5),
-            DateTimes.of("2011-01-07T01"), ImmutableMap.of("output2", "e", "rows", 5, "imps", 5, "impers2", 5),
-            DateTimes.of("2011-01-08T"), ImmutableMap.of("output2", "f", "rows", 6, "imps", 6, "impers2", 6),
-            DateTimes.of("2011-01-08T01"), ImmutableMap.of("output2", "f", "rows", 6, "imps", 6, "impers2", 6),
-            DateTimes.of("2011-01-09T"), ImmutableMap.of("output2", "g", "rows", 7, "imps", 7, "impers2", 7),
-            DateTimes.of("2011-01-09T01"), ImmutableMap.of("output2", "g", "rows", 7, "imps", 7, "impers2", 7)
-        ),
-        runner.run(QueryPlus.wrap(query2), context),
-        "renamed aggregators test"
-    );
-  }
-
-  @Test
   public void testIfNoneMatch()
   {
     Interval interval = Intervals.of("2016/2017");
@@ -3292,7 +3075,7 @@ public class CachingClusteredClientTest
     final ResponseContext responseContext = initializeResponseContext();
 
     getDefaultQueryRunner().run(QueryPlus.wrap(query), responseContext);
-    Assert.assertEquals("MDs2yIUvYLVzaG6zmwTH1plqaYE=", responseContext.get(ResponseContext.Key.ETAG));
+    Assert.assertEquals("MDs2yIUvYLVzaG6zmwTH1plqaYE=", responseContext.getEntityTag());
   }
 
   @Test
@@ -3340,9 +3123,9 @@ public class CachingClusteredClientTest
     final ResponseContext responseContext = initializeResponseContext();
 
     getDefaultQueryRunner().run(QueryPlus.wrap(query), responseContext);
-    final Object etag1 = responseContext.get(ResponseContext.Key.ETAG);
+    final String etag1 = responseContext.getEntityTag();
     getDefaultQueryRunner().run(QueryPlus.wrap(query2), responseContext);
-    final Object etag2 = responseContext.get(ResponseContext.Key.ETAG);
+    final String etag2 = responseContext.getEntityTag();
     Assert.assertNotEquals(etag1, etag2);
   }
 
@@ -3363,7 +3146,7 @@ public class CachingClusteredClientTest
   private static ResponseContext initializeResponseContext()
   {
     final ResponseContext context = ResponseContext.createEmpty();
-    context.put(Key.REMAINING_RESPONSES_FROM_QUERY_SERVERS, new ConcurrentHashMap<>());
+    context.initializeRemainingResponses();
     return context;
   }
 }

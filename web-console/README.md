@@ -46,6 +46,7 @@ The console relies on [eslint](https://eslint.org) (and various plugins), [sass-
 #### Configuring WebStorm
 
 - **Preferences | Languages & Frameworks | JavaScript | Code Quality Tools | ESLint**
+
   - Select "Automatic ESLint Configuration"
   - Check "Run eslint --fix on save"
 
@@ -55,9 +56,11 @@ The console relies on [eslint](https://eslint.org) (and various plugins), [sass-
   - Check "On save"
 
 #### Configuring VS Code
+
 - Install `dbaeumer.vscode-eslint` extension
 - Install `esbenp.prettier-vscode` extension
-- Open User Settings (JSON) and set the following:
+- Select `Open User Settings (JSON)` from the editor commnads (`Ctrl+Shift+P` or `Comand+Shift+P`) and set the following:
+
   ```json
     "editor.defaultFormatter": "esbenp.prettier-vscode",
     "editor.formatOnSave": true,
@@ -67,10 +70,11 @@ The console relies on [eslint](https://eslint.org) (and various plugins), [sass-
   ```
 
 #### Auto-fixing manually
+
 It is also possible to auto-fix and format code without making IDE changes by running the following script:
 
 - `npm run autofix` &mdash; run code linters and formatter
-  
+
 You could also run fixers individually:
 
 - `npm run eslint-fix` &mdash; run code linter and fix issues
@@ -115,13 +119,20 @@ The environment variable `DRUID_E2E_TEST_UNIFIED_CONSOLE_PORT` can be used to ta
 non-default port (i.e., not port `8888`). For example, this environment variable can be used to target the
 development mode of the web console (started via `npm start`), which runs on port `18081`.
 
+Like so: `DRUID_E2E_TEST_UNIFIED_CONSOLE_PORT=18081 npm run test-e2e`
+
+#### Running and debugging a single e2e test using Jest and Playwright
+
+- Run - `jest --config jest.e2e.config.js e2e-tests/tutorial-batch.spec.ts`
+- Debug - `PWDEBUG=console jest --config jest.e2e.config.js e2e-tests/tutorial-batch.spec.ts`
+
 ## Description of the directory structure
 
 As part of this directory:
 
 - `assets/` - The images (and other assets) used within the console
 - `e2e-tests/` - End-to-end tests for the console
-- `lib/` - A place where some overrides to the react-table stylus files live, this is outside of the normal SCSS build system.
+- `lib/` - A place where keywords and generated docs live.
 - `public/` - The compiled destination for the files powering this console
 - `script/` - Some helper bash scripts for running this console
 - `src/` - This directory (together with `lib`) constitutes all the source code for this console

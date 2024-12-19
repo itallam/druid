@@ -19,13 +19,13 @@
 
 package org.apache.druid.indexing.common.task;
 
-import org.apache.druid.indexing.appenderator.ActionBasedUsedSegmentChecker;
+import org.apache.druid.indexing.appenderator.ActionBasedPublishedSegmentRetriever;
 import org.apache.druid.indexing.common.TaskToolbox;
 import org.apache.druid.segment.incremental.ParseExceptionHandler;
 import org.apache.druid.segment.incremental.RowIngestionMeters;
 import org.apache.druid.segment.indexing.DataSchema;
 import org.apache.druid.segment.loading.DataSegmentPusher;
-import org.apache.druid.segment.realtime.FireDepartmentMetrics;
+import org.apache.druid.segment.realtime.SegmentGenerationMetrics;
 import org.apache.druid.segment.realtime.appenderator.Appenderator;
 import org.apache.druid.segment.realtime.appenderator.AppenderatorConfig;
 import org.apache.druid.segment.realtime.appenderator.AppenderatorsManager;
@@ -37,12 +37,13 @@ public final class BatchAppenderators
   public static Appenderator newAppenderator(
       String taskId,
       AppenderatorsManager appenderatorsManager,
-      FireDepartmentMetrics metrics,
+      SegmentGenerationMetrics metrics,
       TaskToolbox toolbox,
       DataSchema dataSchema,
       AppenderatorConfig appenderatorConfig,
       RowIngestionMeters rowIngestionMeters,
-      ParseExceptionHandler parseExceptionHandler
+      ParseExceptionHandler parseExceptionHandler,
+      boolean useMaxMemoryEstimates
   )
   {
     return newAppenderator(
@@ -54,23 +55,25 @@ public final class BatchAppenderators
         appenderatorConfig,
         toolbox.getSegmentPusher(),
         rowIngestionMeters,
-        parseExceptionHandler
+        parseExceptionHandler,
+        useMaxMemoryEstimates
     );
   }
 
   public static Appenderator newAppenderator(
       String taskId,
       AppenderatorsManager appenderatorsManager,
-      FireDepartmentMetrics metrics,
+      SegmentGenerationMetrics metrics,
       TaskToolbox toolbox,
       DataSchema dataSchema,
       AppenderatorConfig appenderatorConfig,
       DataSegmentPusher segmentPusher,
       RowIngestionMeters rowIngestionMeters,
-      ParseExceptionHandler parseExceptionHandler
+      ParseExceptionHandler parseExceptionHandler,
+      boolean useMaxMemoryEstimates
   )
   {
-    return appenderatorsManager.createOfflineAppenderatorForTask(
+    return appenderatorsManager.createBatchAppenderatorForTask(
         taskId,
         dataSchema,
         appenderatorConfig.withBasePersistDirectory(toolbox.getPersistDir()),
@@ -81,7 +84,8 @@ public final class BatchAppenderators
         toolbox.getIndexMergerV9(),
         rowIngestionMeters,
         parseExceptionHandler,
-        toolbox.getConfig().getuseLegacyBatchProcessing()
+        useMaxMemoryEstimates,
+        toolbox.getCentralizedTableSchemaConfig()
     );
   }
 
@@ -94,7 +98,7 @@ public final class BatchAppenderators
     return new BatchAppenderatorDriver(
         appenderator,
         segmentAllocator,
-        new ActionBasedUsedSegmentChecker(toolbox.getTaskActionClient()),
+        new ActionBasedPublishedSegmentRetriever(toolbox.getTaskActionClient()),
         toolbox.getDataSegmentKiller()
     );
   }

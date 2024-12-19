@@ -24,6 +24,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 import org.apache.druid.data.input.InputRow;
 import org.apache.druid.data.input.MapBasedInputRow;
+import org.apache.druid.data.input.impl.TimestampSpec;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.segment.incremental.IncrementalIndex;
 import org.apache.druid.segment.incremental.IndexSizeExceededException;
@@ -99,8 +100,22 @@ public class DataGenerator
     for (ColumnValueGenerator generator : columnGenerators) {
       event.put(generator.getSchema().getName(), generator.generateRowValue());
     }
-    MapBasedInputRow row = new MapBasedInputRow(nextTimestamp(), dimensionNames, event);
-    return row;
+    return new MapBasedInputRow(nextTimestamp(), dimensionNames, event);
+  }
+
+  public Map<String, Object> nextRaw()
+  {
+    return nextRaw(TimestampSpec.DEFAULT_COLUMN);
+  }
+
+  public Map<String, Object> nextRaw(String timestampColumn)
+  {
+    Map<String, Object> event = new HashMap<>();
+    for (ColumnValueGenerator generator : columnGenerators) {
+      event.put(generator.getSchema().getName(), generator.generateRowValue());
+    }
+    event.put(timestampColumn, nextTimestamp());
+    return event;
   }
 
   /**
@@ -124,7 +139,7 @@ public class DataGenerator
     columnGenerators.addAll(
         Lists.transform(
             columnSchemas,
-            new Function<GeneratorColumnSchema, ColumnValueGenerator>()
+            new Function<>()
             {
               @Override
               public ColumnValueGenerator apply(
@@ -189,7 +204,7 @@ public class DataGenerator
    * @param stream the stream of rows to add
    * @param index the index to add rows to
    */
-  public static void addStreamToIndex(Stream<InputRow> stream, IncrementalIndex<?> index)
+  public static void addStreamToIndex(Stream<InputRow> stream, IncrementalIndex index)
   {
     stream.forEachOrdered(row -> {
       try {
@@ -207,7 +222,7 @@ public class DataGenerator
    * @param index the index to add rows to
    * @param numOfRows the number of rows to add
    */
-  public void addToIndex(IncrementalIndex<?> index, int numOfRows)
+  public void addToIndex(IncrementalIndex index, int numOfRows)
   {
     addStreamToIndex(generator(numOfRows), index);
   }

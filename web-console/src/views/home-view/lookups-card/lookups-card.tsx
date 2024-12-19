@@ -20,9 +20,10 @@ import { IconNames } from '@blueprintjs/icons';
 import { sum } from 'd3-array';
 import React from 'react';
 
+import type { Capabilities } from '../../../helpers';
 import { useQueryManager } from '../../../hooks';
 import { Api } from '../../../singletons';
-import { Capabilities, isLookupsUninitialized, pluralIfNeeded } from '../../../utils';
+import { isLookupsUninitialized, pluralIfNeeded } from '../../../utils';
 import { HomeViewCard } from '../home-view-card/home-view-card';
 
 export interface LookupsCardProps {
@@ -31,16 +32,18 @@ export interface LookupsCardProps {
 
 export const LookupsCard = React.memo(function LookupsCard(props: LookupsCardProps) {
   const [lookupsCountState] = useQueryManager<Capabilities, number>({
-    processQuery: async capabilities => {
+    initQuery: props.capabilities,
+    processQuery: async (capabilities, cancelToken) => {
       if (capabilities.hasCoordinatorAccess()) {
-        const resp = await Api.instance.get('/druid/coordinator/v1/lookups/status');
+        const resp = await Api.instance.get('/druid/coordinator/v1/lookups/status', {
+          cancelToken,
+        });
         const data = resp.data;
         return sum(Object.keys(data).map(k => Object.keys(data[k]).length));
       } else {
         throw new Error(`must have coordinator access`);
       }
     },
-    initQuery: props.capabilities,
   });
 
   return (

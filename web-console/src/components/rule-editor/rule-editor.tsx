@@ -30,7 +30,9 @@ import {
 import { IconNames } from '@blueprintjs/icons';
 import React, { useState } from 'react';
 
-import { Rule, RuleUtil } from '../../utils/load-rule';
+import type { Rule } from '../../druid-models';
+import { RuleUtil } from '../../druid-models';
+import { durationSanitizer } from '../../utils';
 import { SuggestibleInput } from '../suggestible-input/suggestible-input';
 
 import './rule-editor.scss';
@@ -39,23 +41,24 @@ const PERIOD_SUGGESTIONS: string[] = ['P1D', 'P7D', 'P1M', 'P1Y', 'P1000Y'];
 
 export interface RuleEditorProps {
   rule: Rule;
-  tiers: any[];
-  onChange: (newRule: Rule) => void;
-  onDelete: () => void;
-  moveUp: (() => void) | undefined;
-  moveDown: (() => void) | undefined;
+  tiers: string[];
+  onChange?: (newRule: Rule) => void;
+  onDelete?: () => void;
+  moveUp?: () => void;
+  moveDown?: () => void;
 }
 
 export const RuleEditor = React.memo(function RuleEditor(props: RuleEditorProps) {
   const { rule, onChange, tiers, onDelete, moveUp, moveDown } = props;
   const [isOpen, setIsOpen] = useState(true);
+  const disabled = !onChange;
 
   function removeTier(key: string) {
     const newTierReplicants = { ...rule.tieredReplicants };
     delete newTierReplicants[key];
 
     const newRule = { ...rule, tieredReplicants: newTierReplicants };
-    onChange(newRule);
+    onChange?.(newRule);
   }
 
   function addTier() {
@@ -70,70 +73,80 @@ export const RuleEditor = React.memo(function RuleEditor(props: RuleEditorProps)
       }
     }
 
-    onChange(RuleUtil.addTieredReplicant(rule, newTierName, 1));
+    onChange?.(RuleUtil.addTieredReplicant(rule, newTierName, 1));
   }
 
   function renderTiers() {
-    const tieredReplicants = rule.tieredReplicants;
-    if (!tieredReplicants) return;
-
-    const ruleTiers = Object.keys(tieredReplicants).sort();
-    return ruleTiers.map(tier => {
+    const tieredReplicants = rule.tieredReplicants || {};
+    const tieredReplicantsList = Object.entries(tieredReplicants);
+    if (!tieredReplicantsList.length) {
       return (
-        <ControlGroup key={tier}>
-          <Button minimal style={{ pointerEvents: 'none' }}>
-            Replicants:
-          </Button>
-          <NumericInput
-            value={tieredReplicants[tier]}
-            onValueChange={(v: number) => {
-              if (isNaN(v)) return;
-              onChange(RuleUtil.addTieredReplicant(rule, tier, v));
-            }}
-            min={1}
-            max={256}
-          />
-          <Button minimal style={{ pointerEvents: 'none' }}>
-            Tier:
-          </Button>
-          <HTMLSelect
-            fill
-            value={tier}
-            onChange={(e: any) =>
-              onChange(RuleUtil.renameTieredReplicants(rule, tier, e.target.value))
-            }
-          >
-            <option key={tier} value={tier}>
-              {tier}
-            </option>
-            {tiers
-              .filter(t => t !== tier && !tieredReplicants[t])
-              .map(t => {
-                return (
+        <FormGroup>
+          There is no historical replication configured, data will not be loaded on historicals.
+        </FormGroup>
+      );
+    }
+
+    return (
+      <FormGroup>
+        {tieredReplicantsList.map(([tier, replication]) => (
+          <ControlGroup key={tier}>
+            <Button minimal disabled={disabled} style={{ pointerEvents: 'none' }}>
+              Tier:
+            </Button>
+            <HTMLSelect
+              fill
+              value={tier}
+              disabled={disabled}
+              onChange={(e: any) =>
+                onChange?.(RuleUtil.renameTieredReplicants(rule, tier, e.target.value))
+              }
+            >
+              <option key={tier} value={tier}>
+                {tier}
+              </option>
+              {tiers
+                .filter(t => t !== tier && !tieredReplicants[t])
+                .map(t => (
                   <option key={t} value={t}>
                     {t}
                   </option>
-                );
-              })}
-          </HTMLSelect>
-          <Button
-            disabled={ruleTiers.length === 1}
-            onClick={() => removeTier(tier)}
-            icon={IconNames.TRASH}
-          />
-        </ControlGroup>
-      );
-    });
+                ))}
+            </HTMLSelect>
+            <Button minimal disabled={disabled} style={{ pointerEvents: 'none' }}>
+              Replicants:
+            </Button>
+            <NumericInput
+              value={replication}
+              disabled={disabled}
+              onValueChange={(v: number) => {
+                if (isNaN(v)) return;
+                onChange?.(RuleUtil.addTieredReplicant(rule, tier, v));
+              }}
+              min={0}
+              max={256}
+            />
+            {onChange && <Button onClick={() => removeTier(tier)} icon={IconNames.TRASH} />}
+          </ControlGroup>
+        ))}
+      </FormGroup>
+    );
   }
 
   function renderTierAdder() {
-    const { rule, tiers } = props;
-    if (Object.keys(rule.tieredReplicants || {}).length >= Object.keys(tiers).length) return;
+    if (!onChange) return;
+    const disabled = Object.keys(rule.tieredReplicants || {}).length >= Object.keys(tiers).length;
 
     return (
-      <FormGroup className="right">
-        <Button onClick={addTier} minimal icon={IconNames.PLUS}>
-          Add a tier
+      <FormGroup>
+        <Button
+          onClick={addTier}
+          minimal
+          icon={IconNames.PLUS}
+          disabled={disabled}
+          data-tooltip={disabled ? 'There are no tiers left to assign' : undefined}
+        >
+          Add historical tier replication
         </Button>
       </FormGroup>
     );
@@ -153,33 +166,32 @@ export const RuleEditor = React.memo(function RuleEditor(props: RuleEditorProps)
         <div className="spacer" />
         {moveUp && <Button minimal icon={IconNames.ARROW_UP} onClick={moveUp} />}
         {moveDown && <Button minimal icon={IconNames.ARROW_DOWN} onClick={moveDown} />}
-        <Button minimal icon={IconNames.TRASH} onClick={onDelete} />
+        {onDelete && <Button minimal icon={IconNames.TRASH} onClick={onDelete} />}
       </div>
 
       <Collapse isOpen={isOpen}>
-        <Card elevation={2}>
+        <Card className="rule-detail" elevation={2}>
           <FormGroup>
             <ControlGroup>
               <HTMLSelect
                 value={rule.type}
-                onChange={(e: any) => onChange(RuleUtil.changeRuleType(rule, e.target.value))}
+                disabled={disabled}
+                onChange={(e: any) => onChange?.(RuleUtil.changeRuleType(rule, e.target.value))}
               >
-                {RuleUtil.TYPES.map(type => {
-                  return (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  );
-                })}
+                {RuleUtil.TYPES.map(type => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
               </HTMLSelect>
               {RuleUtil.hasPeriod(rule) && (
                 <SuggestibleInput
                   value={rule.period || ''}
+                  sanitizer={durationSanitizer}
+                  disabled={disabled}
                   onValueChange={period => {
                     if (typeof period === 'undefined') return;
-                    // Ensure the period is upper case and does not contain anytihng but the allowed chars
-                    period = period.toUpperCase().replace(/[^PYMDTHS0-9]/g, '');
-                    onChange(RuleUtil.changePeriod(rule, period));
+                    onChange?.(RuleUtil.changePeriod(rule, period));
                   }}
                   placeholder={PERIOD_SUGGESTIONS[0]}
                   suggestions={PERIOD_SUGGESTIONS}
@@ -188,27 +200,31 @@ export const RuleEditor = React.memo(function RuleEditor(props: RuleEditorProps)
               {RuleUtil.hasIncludeFuture(rule) && (
                 <Switch
                   className="include-future"
-                  checked={rule.includeFuture || false}
+                  checked={RuleUtil.getIncludeFuture(rule)}
                   label="Include future"
+                  disabled={disabled}
                   onChange={() => {
-                    onChange(RuleUtil.changeIncludeFuture(rule, !rule.includeFuture));
+                    onChange?.(
+                      RuleUtil.changeIncludeFuture(rule, !RuleUtil.getIncludeFuture(rule)),
+                    );
                   }}
                 />
               )}
               {RuleUtil.hasInterval(rule) && (
                 <InputGroup
                   value={rule.interval || ''}
-                  onChange={(e: any) => onChange(RuleUtil.changeInterval(rule, e.target.value))}
+                  readOnly={!onChange}
+                  onChange={(e: any) => onChange?.(RuleUtil.changeInterval(rule, e.target.value))}
                   placeholder="2010-01-01/2020-01-01"
                 />
               )}
             </ControlGroup>
           </FormGroup>
-          {RuleUtil.hasTieredReplicants(rule) && (
-            <FormGroup>
+          {RuleUtil.canHaveTieredReplicants(rule) && (
+            <>
               {renderTiers()}
               {renderTierAdder()}
-            </FormGroup>
+            </>
           )}
         </Card>
       </Collapse>

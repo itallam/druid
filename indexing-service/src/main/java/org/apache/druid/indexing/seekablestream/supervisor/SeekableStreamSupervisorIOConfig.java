@@ -48,6 +48,8 @@ public abstract class SeekableStreamSupervisorIOConfig
   private final Optional<Duration> earlyMessageRejectionPeriod;
   private final Optional<DateTime> lateMessageRejectionStartDateTime;
   @Nullable private final AutoScalerConfig autoScalerConfig;
+  @Nullable private final IdleConfig idleConfig;
+  @Nullable private final Integer stopTaskCount;
 
   public SeekableStreamSupervisorIOConfig(
       String stream,
@@ -62,7 +64,9 @@ public abstract class SeekableStreamSupervisorIOConfig
       Period lateMessageRejectionPeriod,
       Period earlyMessageRejectionPeriod,
       @Nullable AutoScalerConfig autoScalerConfig,
-      DateTime lateMessageRejectionStartDateTime
+      DateTime lateMessageRejectionStartDateTime,
+      @Nullable IdleConfig idleConfig,
+      @Nullable Integer stopTaskCount
   )
   {
     this.stream = Preconditions.checkNotNull(stream, "stream cannot be null");
@@ -76,6 +80,9 @@ public abstract class SeekableStreamSupervisorIOConfig
     } else {
       this.taskCount = taskCount != null ? taskCount : 1;
     }
+    Preconditions.checkArgument(stopTaskCount == null || stopTaskCount > 0,
+                                "stopTaskCount must be greater than 0");
+    this.stopTaskCount = stopTaskCount;
     this.taskDuration = defaultDuration(taskDuration, "PT1H");
     this.startDelay = defaultDuration(startDelay, "PT5S");
     this.period = defaultDuration(period, "PT30S");
@@ -97,6 +104,8 @@ public abstract class SeekableStreamSupervisorIOConfig
                 + "both properties lateMessageRejectionStartDateTime "
           + "and lateMessageRejectionPeriod.");
     }
+
+    this.idleConfig = idleConfig;
   }
 
   private static Duration defaultDuration(final Period period, final String theDefault)
@@ -125,7 +134,7 @@ public abstract class SeekableStreamSupervisorIOConfig
 
   @Nullable
   @JsonProperty
-  public AutoScalerConfig getAutoscalerConfig()
+  public AutoScalerConfig getAutoScalerConfig()
   {
     return autoScalerConfig;
   }
@@ -187,5 +196,24 @@ public abstract class SeekableStreamSupervisorIOConfig
   public Optional<DateTime> getLateMessageRejectionStartDateTime()
   {
     return lateMessageRejectionStartDateTime;
+  }
+
+  @Nullable
+  @JsonProperty
+  public IdleConfig getIdleConfig()
+  {
+    return idleConfig;
+  }
+
+  @Nullable
+  @JsonProperty
+  public Integer getStopTaskCount()
+  {
+    return stopTaskCount;
+  }
+
+  public int getMaxAllowedStops()
+  {
+    return stopTaskCount == null ? taskCount : stopTaskCount;
   }
 }

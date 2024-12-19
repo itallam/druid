@@ -23,6 +23,7 @@ import com.amazonaws.AmazonServiceException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
+import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.emitter.EmittingLogger;
 import org.apache.druid.segment.SegmentUtils;
@@ -79,8 +80,13 @@ public class S3DataSegmentPusher implements DataSegmentPusher
   public DataSegment push(final File indexFilesDir, final DataSegment inSegment, final boolean useUniquePath)
       throws IOException
   {
-    final String s3Path = S3Utils.constructSegmentPath(config.getBaseKey(), getStorageDir(inSegment, useUniquePath));
+    return pushToPath(indexFilesDir, inSegment, getStorageDir(inSegment, useUniquePath));
+  }
 
+  @Override
+  public DataSegment pushToPath(File indexFilesDir, DataSegment inSegment, String storageDirSuffix) throws IOException
+  {
+    final String s3Path = S3Utils.constructSegmentPath(config.getBaseKey(), storageDirSuffix);
     log.debug("Copying segment[%s] to S3 at location[%s]", inSegment.getId(), s3Path);
 
     final File zipOutFile = File.createTempFile("druid", "index.zip");
@@ -100,6 +106,19 @@ public class S3DataSegmentPusher implements DataSegmentPusher
       );
     }
     catch (AmazonServiceException e) {
+      if (S3Utils.ERROR_ENTITY_TOO_LARGE.equals(S3Utils.getS3ErrorCode(e))) {
+        throw DruidException
+            .forPersona(DruidException.Persona.USER)
+            .ofCategory(DruidException.Category.RUNTIME_FAILURE)
+            .build(
+                e,
+                "Got error[%s] from S3 when uploading segment of size[%,d] bytes. This typically happens when segment "
+                + "size is above 5GB. Try reducing your segment size by lowering the target number of rows per "
+                + "segment.",
+                S3Utils.ERROR_ENTITY_TOO_LARGE,
+                indexSize
+            );
+      }
       throw new IOException(e);
     }
     catch (Exception e) {

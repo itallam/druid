@@ -25,7 +25,6 @@ import com.google.common.collect.Sets;
 import com.google.common.primitives.Ints;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.apache.commons.io.IOUtils;
-import org.apache.druid.java.util.common.guava.CloseQuietly;
 import org.apache.druid.java.util.common.io.smoosh.FileSmoosher;
 import org.apache.druid.java.util.common.io.smoosh.Smoosh;
 import org.apache.druid.java.util.common.io.smoosh.SmooshedFileMapper;
@@ -34,6 +33,7 @@ import org.apache.druid.segment.writeout.OffHeapMemorySegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.SegmentWriteOutMedium;
 import org.apache.druid.segment.writeout.TmpFileSegmentWriteOutMediumFactory;
 import org.apache.druid.segment.writeout.WriteOutBytes;
+import org.apache.druid.utils.CloseableUtils;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -124,7 +124,8 @@ public class CompressedVSizeColumnarIntsSerializerTest
         vals.length > 0 ? Ints.max(vals) : 0,
         chunkSize,
         byteOrder,
-        compressionStrategy
+        compressionStrategy,
+        segmentWriteOutMedium.getCloser()
     );
     CompressedVSizeColumnarIntsSupplier supplierFromList = CompressedVSizeColumnarIntsSupplier.fromList(
         IntArrayList.wrap(vals),
@@ -154,7 +155,7 @@ public class CompressedVSizeColumnarIntsSerializerTest
     for (int i = 0; i < vals.length; ++i) {
       Assert.assertEquals(vals[i], columnarInts.get(i));
     }
-    CloseQuietly.close(columnarInts);
+    CloseableUtils.closeAndWrapExceptions(columnarInts);
   }
 
   @Test
@@ -197,16 +198,17 @@ public class CompressedVSizeColumnarIntsSerializerTest
           segmentWriteOutMedium,
           "test",
           compressionStrategy,
-          Long.BYTES * 10000
+          Long.BYTES * 10000,
+          segmentWriteOutMedium.getCloser()
       );
       CompressedVSizeColumnarIntsSerializer serializer = new CompressedVSizeColumnarIntsSerializer(
           "test",
-          segmentWriteOutMedium,
           maxValue,
           maxChunkSize,
           byteOrder,
           compressionStrategy,
-          genericIndexed
+          genericIndexed,
+          segmentWriteOutMedium.getCloser()
       );
       serializer.open();
 
@@ -233,16 +235,17 @@ public class CompressedVSizeColumnarIntsSerializerTest
         segmentWriteOutMedium,
         "test",
         compressionStrategy,
-        Long.BYTES * 10000
+        Long.BYTES * 10000,
+        segmentWriteOutMedium.getCloser()
     );
     CompressedVSizeColumnarIntsSerializer writer = new CompressedVSizeColumnarIntsSerializer(
         columnName,
-        segmentWriteOutMedium,
         vals.length > 0 ? Ints.max(vals) : 0,
         chunkSize,
         byteOrder,
         compressionStrategy,
-        genericIndexed
+        genericIndexed,
+        segmentWriteOutMedium.getCloser()
     );
     writer.open();
     for (int val : vals) {
@@ -268,8 +271,7 @@ public class CompressedVSizeColumnarIntsSerializerTest
     for (int i = 0; i < vals.length; ++i) {
       Assert.assertEquals(vals[i], columnarInts.get(i));
     }
-    CloseQuietly.close(columnarInts);
-    mapper.close();
+    CloseableUtils.closeAll(columnarInts, mapper);
   }
 
   @Test

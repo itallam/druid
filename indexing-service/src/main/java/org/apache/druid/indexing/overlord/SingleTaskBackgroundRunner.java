@@ -59,6 +59,7 @@ import org.joda.time.Interval;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -184,6 +185,7 @@ public class SingleTaskBackgroundRunner implements TaskRunner, QuerySegmentWalke
       // stopGracefully for resource cleaning
       log.info("Starting graceful shutdown of task[%s].", task.getId());
       task.stopGracefully(taskConfig);
+      task.waitForCleanupToFinish();
 
       if (taskConfig.isRestoreTasksOnRestart() && task.canRestore()) {
         try {
@@ -244,8 +246,8 @@ public class SingleTaskBackgroundRunner implements TaskRunner, QuerySegmentWalke
           .setDimension("graceful", "true") // for backward compatibility
           .setDimension("error", String.valueOf(error));
 
-      emitter.emit(metricBuilder.build("task/interrupt/count", 1L));
-      emitter.emit(metricBuilder.build("task/interrupt/elapsed", elapsed));
+      emitter.emit(metricBuilder.setMetric("task/interrupt/count", 1L));
+      emitter.emit(metricBuilder.setMetric("task/interrupt/elapsed", elapsed));
     }
 
     // Ok, now interrupt everything.
@@ -334,34 +336,39 @@ public class SingleTaskBackgroundRunner implements TaskRunner, QuerySegmentWalke
     return Optional.absent();
   }
 
+  /* This method should be never called in peons */
   @Override
-  public long getTotalTaskSlotCount()
+  public Map<String, Long> getTotalTaskSlotCount()
   {
-    return 1;
+    throw new UnsupportedOperationException();
   }
 
+  /* This method should be never called in peons */
   @Override
-  public long getIdleTaskSlotCount()
+  public Map<String, Long> getIdleTaskSlotCount()
   {
-    return runningItem == null ? 1 : 0;
+    throw new UnsupportedOperationException();
   }
 
+  /* This method should be never called in peons */
   @Override
-  public long getUsedTaskSlotCount()
+  public Map<String, Long> getUsedTaskSlotCount()
   {
-    return runningItem == null ? 0 : 1;
+    throw new UnsupportedOperationException();
   }
 
+  /* This method should be never called in peons */
   @Override
-  public long getLazyTaskSlotCount()
+  public Map<String, Long> getLazyTaskSlotCount()
   {
-    return 0;
+    throw new UnsupportedOperationException();
   }
 
+  /* This method should be never called in peons */
   @Override
-  public long getBlacklistedTaskSlotCount()
+  public Map<String, Long> getBlacklistedTaskSlotCount()
   {
-    return 0;
+    throw new UnsupportedOperationException();
   }
 
   @Override
@@ -381,7 +388,7 @@ public class SingleTaskBackgroundRunner implements TaskRunner, QuerySegmentWalke
     QueryRunner<T> queryRunner = null;
 
     if (runningItem != null) {
-      final DataSourceAnalysis analysis = DataSourceAnalysis.forDataSource(query.getDataSource());
+      final DataSourceAnalysis analysis = query.getDataSource().getAnalysis();
       final Task task = runningItem.getTask();
 
       if (analysis.getBaseTableDataSource().isPresent()

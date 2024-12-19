@@ -1,0 +1,423 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`SupervisorsView matches snapshot 1`] = `
+<div
+  className="supervisors-view app-view"
+>
+  <Memo(ViewControlBar)
+    label="Supervisors"
+  >
+    <Memo(RefreshButton)
+      localStorageKey="supervisors-refresh-rate"
+      onRefresh={[Function]}
+    />
+    <React.Fragment>
+      <Memo(MoreButton)>
+        <Blueprint5.MenuItem
+          active={false}
+          disabled={true}
+          icon="application"
+          multiline={false}
+          onClick={[Function]}
+          popoverProps={{}}
+          shouldDismissPopover={true}
+          text="View SQL query for table"
+        />
+        <Blueprint5.MenuItem
+          active={false}
+          disabled={false}
+          icon="manually-entered-data"
+          multiline={false}
+          onClick={[Function]}
+          popoverProps={{}}
+          shouldDismissPopover={true}
+          text="Submit JSON supervisor"
+        />
+        <Blueprint5.MenuItem
+          active={false}
+          disabled={false}
+          icon="play"
+          multiline={false}
+          onClick={[Function]}
+          popoverProps={{}}
+          shouldDismissPopover={true}
+          text="Resume all supervisors"
+        />
+        <Blueprint5.MenuItem
+          active={false}
+          disabled={false}
+          icon="pause"
+          multiline={false}
+          onClick={[Function]}
+          popoverProps={{}}
+          shouldDismissPopover={true}
+          text="Suspend all supervisors"
+        />
+        <Blueprint5.MenuItem
+          active={false}
+          disabled={false}
+          icon="cross"
+          intent="danger"
+          multiline={false}
+          onClick={[Function]}
+          popoverProps={{}}
+          shouldDismissPopover={true}
+          text="Terminate all supervisors"
+        />
+      </Memo(MoreButton)>
+    </React.Fragment>
+    <Memo(TableColumnSelector)
+      columns={
+        [
+          "Supervisor ID",
+          "Type",
+          "Topic/Stream",
+          "Status",
+          "Configured tasks",
+          {
+            "label": "status API",
+            "text": "Running tasks",
+          },
+          {
+            "label": "status API",
+            "text": "Aggregate lag",
+          },
+          {
+            "label": "stats API",
+            "text": "Stats",
+          },
+          {
+            "label": "status API",
+            "text": "Recent errors",
+          },
+        ]
+      }
+      onChange={[Function]}
+      tableColumnsHidden={[]}
+    />
+  </Memo(ViewControlBar)>
+  <ReactTable
+    AggregatedComponent={[Function]}
+    ExpanderComponent={[Function]}
+    FilterComponent={[Function]}
+    LoadingComponent={[Function]}
+    NoDataComponent={[Function]}
+    PadRowComponent={[Function]}
+    PaginationComponent={[Function]}
+    PivotValueComponent={[Function]}
+    ResizerComponent={[Function]}
+    TableComponent={[Function]}
+    TbodyComponent={[Function]}
+    TdComponent={[Function]}
+    TfootComponent={[Function]}
+    ThComponent={[Function]}
+    TheadComponent={[Function]}
+    TrComponent={[Function]}
+    TrGroupComponent={[Function]}
+    aggregatedKey="_aggregated"
+    className=""
+    collapseOnDataChange={true}
+    collapseOnPageChange={true}
+    collapseOnSortingChange={true}
+    column={
+      {
+        "Aggregated": undefined,
+        "Cell": undefined,
+        "Expander": undefined,
+        "Filter": undefined,
+        "Footer": undefined,
+        "Header": undefined,
+        "Pivot": undefined,
+        "PivotValue": undefined,
+        "Placeholder": undefined,
+        "aggregate": undefined,
+        "className": "",
+        "filterAll": false,
+        "filterMethod": undefined,
+        "filterable": undefined,
+        "footerClassName": "",
+        "footerStyle": {},
+        "getFooterProps": [Function],
+        "getHeaderProps": [Function],
+        "getProps": [Function],
+        "headerClassName": "",
+        "headerStyle": {},
+        "minResizeWidth": 11,
+        "minWidth": 100,
+        "resizable": undefined,
+        "show": true,
+        "sortMethod": undefined,
+        "sortable": undefined,
+        "style": {},
+      }
+    }
+    columns={
+      [
+        {
+          "Cell": [Function],
+          "Header": <React.Fragment>
+            Supervisor ID
+            <br />
+            <i>
+              (datasource)
+            </i>
+          </React.Fragment>,
+          "accessor": "supervisor_id",
+          "id": "supervisor_id",
+          "show": true,
+          "width": 280,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Type",
+          "accessor": "type",
+          "show": true,
+          "width": 80,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Topic/Stream",
+          "accessor": "source",
+          "show": true,
+          "width": 200,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Status",
+          "accessor": "detailed_state",
+          "id": "detailed_state",
+          "show": true,
+          "width": 150,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Configured tasks",
+          "accessor": "spec",
+          "className": "padded",
+          "filterable": false,
+          "id": "configured_tasks",
+          "show": true,
+          "sortable": false,
+          "width": 130,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Running tasks",
+          "accessor": "status.payload",
+          "filterable": false,
+          "id": "running_tasks",
+          "show": true,
+          "sortable": false,
+          "width": 150,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Aggregate lag",
+          "accessor": "status.payload.aggregateLag",
+          "className": "padded",
+          "filterable": false,
+          "show": true,
+          "sortable": false,
+          "width": 200,
+        },
+        {
+          "Cell": [Function],
+          "Header": <React.Fragment>
+            Stats
+            <br />
+            <Blueprint5.Popover
+              boundary="clippingParents"
+              captureDismiss={false}
+              content={
+                <Blueprint5.Menu>
+                  <Blueprint5.MenuItem
+                    active={false}
+                    disabled={false}
+                    icon="circle"
+                    multiline={false}
+                    onClick={[Function]}
+                    popoverProps={{}}
+                    shouldDismissPopover={true}
+                    text="Rate over past 1 minute"
+                  />
+                  <Blueprint5.MenuItem
+                    active={false}
+                    disabled={false}
+                    icon="tick-circle"
+                    multiline={false}
+                    onClick={[Function]}
+                    popoverProps={{}}
+                    shouldDismissPopover={true}
+                    text="Rate over past 5 minutes"
+                  />
+                  <Blueprint5.MenuItem
+                    active={false}
+                    disabled={false}
+                    icon="circle"
+                    multiline={false}
+                    onClick={[Function]}
+                    popoverProps={{}}
+                    shouldDismissPopover={true}
+                    text="Rate over past 15 minutes"
+                  />
+                </Blueprint5.Menu>
+              }
+              defaultIsOpen={false}
+              disabled={false}
+              fill={false}
+              hasBackdrop={false}
+              hoverCloseDelay={300}
+              hoverOpenDelay={150}
+              inheritDarkTheme={true}
+              interactionKind="click"
+              matchTargetWidth={false}
+              minimal={false}
+              openOnTargetFocus={true}
+              position="bottom"
+              positioningStrategy="absolute"
+              shouldReturnFocusOnClose={false}
+              targetTagName="span"
+              transitionDuration={300}
+              usePortal={true}
+            >
+              <i
+                className="title-button"
+              >
+                Rate over past 5 minutes
+                 
+                <Blueprint5.Icon
+                  autoLoad={true}
+                  icon="caret-down"
+                  tagName="span"
+                />
+              </i>
+            </Blueprint5.Popover>
+          </React.Fragment>,
+          "accessor": "stats",
+          "className": "padded",
+          "filterable": false,
+          "id": "stats",
+          "show": true,
+          "sortable": false,
+          "width": 300,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Recent errors",
+          "accessor": "status.payload.recentErrors",
+          "filterable": false,
+          "show": true,
+          "sortable": false,
+          "width": 150,
+        },
+        {
+          "Cell": [Function],
+          "Header": "Actions",
+          "accessor": "supervisor_id",
+          "filterable": false,
+          "id": "actions",
+          "sortable": false,
+          "width": 70,
+        },
+      ]
+    }
+    data={[]}
+    defaultExpanded={{}}
+    defaultFilterMethod={[Function]}
+    defaultFiltered={[]}
+    defaultPage={0}
+    defaultPageSize={20}
+    defaultResized={[]}
+    defaultSortDesc={false}
+    defaultSortMethod={[Function]}
+    defaultSorted={[]}
+    expanderDefaults={
+      {
+        "filterable": false,
+        "resizable": false,
+        "sortable": false,
+        "width": 35,
+      }
+    }
+    filterable={true}
+    filtered={[]}
+    freezeWhenExpanded={false}
+    getLoadingProps={[Function]}
+    getNoDataProps={[Function]}
+    getPaginationProps={[Function]}
+    getProps={[Function]}
+    getResizerProps={[Function]}
+    getTableProps={[Function]}
+    getTbodyProps={[Function]}
+    getTdProps={[Function]}
+    getTfootProps={[Function]}
+    getTfootTdProps={[Function]}
+    getTfootTrProps={[Function]}
+    getTheadFilterProps={[Function]}
+    getTheadFilterThProps={[Function]}
+    getTheadFilterTrProps={[Function]}
+    getTheadGroupProps={[Function]}
+    getTheadGroupThProps={[Function]}
+    getTheadGroupTrProps={[Function]}
+    getTheadProps={[Function]}
+    getTheadThProps={[Function]}
+    getTheadTrProps={[Function]}
+    getTrGroupProps={[Function]}
+    getTrProps={[Function]}
+    groupedByPivotKey="_groupedByPivot"
+    indexKey="_index"
+    loading={true}
+    loadingText="Loading..."
+    manual={true}
+    multiSort={true}
+    nestingLevelKey="_nestingLevel"
+    nextText="Next"
+    noDataText=""
+    ofText=""
+    onFetchData={[Function]}
+    onFilteredChange={[Function]}
+    onPageChange={[Function]}
+    onPageSizeChange={[Function]}
+    onSortedChange={[Function]}
+    originalKey="_original"
+    page={0}
+    pageJumpText="jump to page"
+    pageSize={25}
+    pageSizeOptions={
+      [
+        25,
+        50,
+        100,
+      ]
+    }
+    pageText="Page"
+    pages={10000000}
+    pivotDefaults={{}}
+    pivotIDKey="_pivotID"
+    pivotValKey="_pivotVal"
+    previousText="Previous"
+    resizable={true}
+    resolveData={[Function]}
+    rowsSelectorText="rows per page"
+    rowsText="rows"
+    showPageJump={false}
+    showPageSizeOptions={true}
+    showPagination={false}
+    showPaginationBottom={true}
+    showPaginationTop={false}
+    sortable={true}
+    sorted={[]}
+    style={{}}
+    subRowsKey="_subRows"
+  />
+  <Memo(AlertDialog)
+    confirmButtonText="OK"
+    icon="error"
+    intent="primary"
+    isOpen={false}
+    onConfirm={[Function]}
+  >
+    <p />
+  </Memo(AlertDialog)>
+</div>
+`;

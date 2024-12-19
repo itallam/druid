@@ -20,29 +20,34 @@
 package org.apache.druid.indexing.common.task.batch.parallel;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.HashBasedTable;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Table;
 import org.apache.druid.indexing.common.TaskToolbox;
 import org.apache.druid.indexing.common.task.TaskResource;
 import org.apache.druid.java.util.common.ISE;
+import org.apache.druid.server.security.ResourceAction;
 import org.apache.druid.timeline.partition.BuildingShardSpec;
 import org.apache.druid.timeline.partition.ShardSpec;
 import org.joda.time.Interval;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * {@link ParallelIndexTaskRunner} for the phase to merge generic partitioned segments in multi-phase parallel indexing.
  */
-public class PartialGenericSegmentMergeTask extends PartialSegmentMergeTask<BuildingShardSpec, GenericPartitionLocation>
+public class PartialGenericSegmentMergeTask extends PartialSegmentMergeTask<BuildingShardSpec>
 {
   public static final String TYPE = "partial_index_generic_merge";
 
-  private final PartialGenericSegmentMergeIngestionSpec ingestionSchema;
+  private final PartialSegmentMergeIngestionSpec ingestionSchema;
   private final Table<Interval, Integer, BuildingShardSpec<?>> intervalAndIntegerToShardSpec;
 
   @JsonCreator
@@ -55,7 +60,7 @@ public class PartialGenericSegmentMergeTask extends PartialSegmentMergeTask<Buil
       // subtaskSpecId can be null only for old task versions.
       @JsonProperty("subtaskSpecId") @Nullable final String subtaskSpecId,
       @JsonProperty("numAttempts") final int numAttempts, // zero-based counting
-      @JsonProperty("spec") final PartialGenericSegmentMergeIngestionSpec ingestionSchema,
+      @JsonProperty("spec") final PartialSegmentMergeIngestionSpec ingestionSchema,
       @JsonProperty("context") final Map<String, Object> context
   )
   {
@@ -79,7 +84,7 @@ public class PartialGenericSegmentMergeTask extends PartialSegmentMergeTask<Buil
   }
 
   private static Table<Interval, Integer, BuildingShardSpec<?>> createIntervalAndIntegerToShardSpec(
-      List<GenericPartitionLocation> partitionLocations
+      List<PartitionLocation> partitionLocations
   )
   {
     final Table<Interval, Integer, BuildingShardSpec<?>> intervalAndIntegerToShardSpec = HashBasedTable.create();
@@ -107,7 +112,7 @@ public class PartialGenericSegmentMergeTask extends PartialSegmentMergeTask<Buil
   }
 
   @JsonProperty("spec")
-  private PartialGenericSegmentMergeIngestionSpec getIngestionSchema()
+  private PartialSegmentMergeIngestionSpec getIngestionSchema()
   {
     return ingestionSchema;
   }
@@ -116,6 +121,14 @@ public class PartialGenericSegmentMergeTask extends PartialSegmentMergeTask<Buil
   public String getType()
   {
     return TYPE;
+  }
+
+  @Nonnull
+  @JsonIgnore
+  @Override
+  public Set<ResourceAction> getInputSourceResources()
+  {
+    return ImmutableSet.of();
   }
 
   @Override
